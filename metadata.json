@@ -1,0 +1,6 @@
+{
+  "name": "Cutout Pro",
+  "description": "Professional on-device background remover and photo editor with precision tools and transparent PNG export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
