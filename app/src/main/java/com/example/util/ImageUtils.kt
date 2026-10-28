@@ -1,5 +1,6 @@
 package com.example.util
 
+import android.content.ClipData
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -30,6 +31,20 @@ import kotlin.math.min
 object ImageUtils {
 
     const val MAX_IMAGE_DIMENSION = 2048
+
+    /**
+     * Always returns a NEW mutable bitmap of the requested size.
+     * Bitmap.createScaledBitmap() returns the *same* instance when the size already matches,
+     * and callers frequently recycle the source afterwards (which would then recycle the result).
+     */
+    fun scaleToNewBitmap(src: Bitmap, width: Int, height: Int): Bitmap {
+        val scaled = if (src.width == width && src.height == height) {
+            src.copy(Bitmap.Config.ARGB_8888, true)
+        } else {
+            Bitmap.createScaledBitmap(src, width, height, true)
+        }
+        return if (scaled.isMutable) scaled else scaled.copy(Bitmap.Config.ARGB_8888, true).also { scaled.recycle() }
+    }
 
     /**
      * Safely decodes a bitmap from a Uri, corrects EXIF orientation,
@@ -93,10 +108,12 @@ object ImageUtils {
             ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
             ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
             ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> { matrix.postRotate(90f); matrix.postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_TRANSVERSE -> { matrix.postRotate(270f); matrix.postScale(-1f, 1f) }
             else -> return bitmap
         }
         val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-        if (rotated != bitmap) {
+        if (rotated !== bitmap) {
             bitmap.recycle()
         }
         return rotated
@@ -176,7 +193,13 @@ object ImageUtils {
             }
             "IMAGE" -> {
                 if (bgImage != null) {
-                    val srcRect = Rect(0, 0, bgImage.width, bgImage.height)
+                    // Center-crop so the background photo is never stretched/distorted.
+                    val scale = max(width.toFloat() / bgImage.width, height.toFloat() / bgImage.height)
+                    val srcW = (width / scale).toInt().coerceIn(1, bgImage.width)
+                    val srcH = (height / scale).toInt().coerceIn(1, bgImage.height)
+                    val srcLeft = ((bgImage.width - srcW) / 2).coerceAtLeast(0)
+                    val srcTop = ((bgImage.height - srcH) / 2).coerceAtLeast(0)
+                    val srcRect = Rect(srcLeft, srcTop, srcLeft + srcW, srcTop + srcH)
                     val dstRect = Rect(0, 0, width, height)
                     canvas.drawBitmap(bgImage, srcRect, dstRect, paint)
                 } else {
@@ -222,16 +245,22 @@ object ImageUtils {
             val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
                 ?: throw IllegalStateException("Failed to create MediaStore entry")
 
-            resolver.openOutputStream(uri)?.use { outStream ->
-                val compressFormat = if (format == "PNG") Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
-                val success = bitmap.compress(compressFormat, quality, outStream)
-                if (!success) throw IllegalStateException("Bitmap compression failed")
-            } ?: throw IllegalStateException("Failed to open output stream")
+            try {
+                resolver.openOutputStream(uri)?.use { outStream ->
+                    val compressFormat = if (format == "PNG") Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
+                    val success = bitmap.compress(compressFormat, quality, outStream)
+                    if (!success) throw IllegalStateException("Bitmap compression failed")
+                } ?: throw IllegalStateException("Failed to open output stream")
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                contentValues.clear()
-                contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
-                resolver.update(uri, contentValues, null, null)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    contentValues.clear()
+                    contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    resolver.update(uri, contentValues, null, null)
+                }
+            } catch (e: Throwable) {
+                // Don't leave a half-written / pending entry behind in the gallery.
+                runCatching { resolver.delete(uri, null, null) }
+                throw e
             }
 
             uri
@@ -248,12 +277,18 @@ object ImageUtils {
     ): Result<Intent> = withContext(Dispatchers.IO) {
         runCatching {
             val cacheDir = File(context.cacheDir, "exports").apply { mkdirs() }
+            // Remove stale share files from previous exports.
+            cacheDir.listFiles()?.forEach { old ->
+                if (System.currentTimeMillis() - old.lastModified() > 60 * 60 * 1000L) old.delete()
+            }
             val extension = if (isPng) "png" else "jpg"
             val file = File(cacheDir, "cutout_share_${System.currentTimeMillis()}.$extension")
 
             FileOutputStream(file).use { out ->
                 val format = if (isPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
-                bitmap.compress(format, 95, out)
+                if (!bitmap.compress(format, 95, out)) {
+                    throw IllegalStateException("Bitmap compression failed")
+                }
             }
 
             val authority = "${context.packageName}.fileprovider"
@@ -262,6 +297,8 @@ object ImageUtils {
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = if (isPng) "image/png" else "image/jpeg"
                 putExtra(Intent.EXTRA_STREAM, contentUri)
+                // ClipData makes the read grant reliable through the system chooser.
+                clipData = ClipData.newRawUri("Cutout", contentUri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
 
@@ -277,7 +314,9 @@ object ImageUtils {
             val dir = File(context.filesDir, "projects").apply { mkdirs() }
             val file = File(dir, fileName)
             FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 95, out)
+                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 95, out)) {
+                    throw IllegalStateException("Failed to write $fileName")
+                }
             }
             file.absolutePath
         }
@@ -289,7 +328,12 @@ object ImageUtils {
         runCatching {
             val file = File(path)
             if (file.exists()) {
-                BitmapFactory.decodeFile(file.absolutePath)
+                // Must be mutable: masks loaded from disk are edited in place (setPixel / eraseColor).
+                val opts = BitmapFactory.Options().apply {
+                    inMutable = true
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                BitmapFactory.decodeFile(file.absolutePath, opts)
             } else null
         }.getOrNull()
     }
