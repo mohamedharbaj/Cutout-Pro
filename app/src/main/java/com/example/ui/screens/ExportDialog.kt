@@ -74,7 +74,16 @@ fun ExportBottomSheet(
     var jpegQuality by remember { mutableFloatStateOf(95f) }
     var isSaving by remember { mutableStateOf(false) }
 
-    val previewBitmap = if (selectedFormat == "PNG") cutoutBitmap else compositedBitmap
+    // JPEG has no alpha channel: with a "Transparent" background the see-through pixels were exported
+    // as solid BLACK. Flatten onto white for JPEG in that case.
+    val jpegBitmap = remember(cutoutBitmap, compositedBitmap, bgType) {
+        if (bgType == "TRANSPARENT") {
+            ImageUtils.compositeImage(cutoutBitmap, "COLOR", android.graphics.Color.WHITE, null)
+        } else {
+            compositedBitmap
+        }
+    }
+    val previewBitmap = if (selectedFormat == "PNG") cutoutBitmap else jpegBitmap
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
