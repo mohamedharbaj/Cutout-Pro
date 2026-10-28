@@ -101,7 +101,9 @@ fun HomeScreen(
     onOpenSettings: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    val projects by projectRepository.getAllProjects().collectAsState(initial = emptyList())
+    // remember{}: a new Flow instance on every recomposition restarted the collector (flicker + repeated DB queries).
+    val projectsFlow = remember(projectRepository) { projectRepository.getAllProjects() }
+    val projects by projectsFlow.collectAsState(initial = emptyList())
     val downloadState by modelManager.downloadState.collectAsState()
 
     var projectToDelete by remember { mutableStateOf<ProjectEntity?>(null) }
