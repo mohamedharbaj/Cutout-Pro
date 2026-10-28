@@ -73,7 +73,7 @@
     <string name="model_builtin">Built-in Saliency &amp; Edge Engine</string>
     <string name="model_birefnet">BiRefNet Lite ONNX Neural Model</string>
     <string name="model_status_ready">Downloaded and ready (Offline)</string>
-    <string name="model_status_not_downloaded">Optional neural weights (~34 MB)</string>
+    <string name="model_status_not_downloaded">Optional neural weights (~224 MB)</string>
     <string name="model_download">Download Neural Model</string>
     <string name="model_downloading">Downloading model...</string>
     <string name="model_download_complete">Model installed successfully</string>
