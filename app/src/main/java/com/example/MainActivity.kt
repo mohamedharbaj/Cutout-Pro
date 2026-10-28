@@ -1,10 +1,15 @@
 package com.example
 
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.res.Configuration
+import android.content.res.Resources
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -15,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -23,6 +29,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import com.example.data.model.ProjectEntity
@@ -34,6 +42,7 @@ import com.example.ui.theme.CutoutProTheme
 import com.example.util.ImageUtils
 import com.example.util.SampleImageProvider
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 sealed class Screen {
     data object Welcome : Screen()
@@ -57,7 +66,9 @@ class MainActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
             val themeMode by settingsRepo.themeModeFlow.collectAsState(initial = "SYSTEM")
             val language by settingsRepo.languageFlow.collectAsState(initial = "SYSTEM")
-            val isFirstLaunch by settingsRepo.isFirstLaunchFlow.collectAsState(initial = false)
+            // null = DataStore not loaded yet. The old initial value `false` meant the Welcome screen
+            // was NEVER shown, because the start screen was decided once, before the real value arrived.
+            val isFirstLaunch by settingsRepo.isFirstLaunchFlow.collectAsState(initial = null)
 
             val isDark = when (themeMode) {
                 "DARK" -> true
@@ -71,12 +82,31 @@ class MainActivity : ComponentActivity() {
                 else -> LocalLayoutDirection.current
             }
 
-            var currentScreen by remember {
-                mutableStateOf<Screen>(if (isFirstLaunch) Screen.Welcome else Screen.Home)
-            }
+            var currentScreen by remember { mutableStateOf<Screen?>(null) }
             var isLoadingImage by remember { mutableStateOf(false) }
 
-            CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
+            LaunchedEffect(isFirstLaunch) {
+                val first = isFirstLaunch
+                if (currentScreen == null && first != null) {
+                    currentScreen = if (first) Screen.Welcome else Screen.Home
+                }
+            }
+
+            // The language setting used to flip only the layout direction; strings kept following
+            // the system locale. Provide a Context whose resources use the chosen locale.
+            val baseContext = LocalContext.current
+            val localizedContext = remember(language, baseContext) { createLocalizedContext(baseContext, language) }
+
+            // Settings had no back handling: system Back closed the whole app.
+            BackHandler(enabled = currentScreen is Screen.Settings) {
+                currentScreen = Screen.Home
+            }
+
+            CompositionLocalProvider(
+                LocalContext provides localizedContext,
+                LocalConfiguration provides localizedContext.resources.configuration,
+                LocalLayoutDirection provides layoutDirection
+            ) {
                 CutoutProTheme(darkTheme = isDark) {
                     Surface(
                         modifier = Modifier.fillMaxSize(),
@@ -84,6 +114,13 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             when (val screen = currentScreen) {
+                                null -> {
+                                    // Waiting for the first-launch flag from DataStore.
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) { CircularProgressIndicator() }
+                                }
                                 is Screen.Welcome -> {
                                     WelcomeScreen(
                                         onStartEditing = {
@@ -179,5 +216,23 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+}
+
+private fun createLocalizedContext(base: Context, language: String): Context {
+    val locale = when (language) {
+        "AR" -> Locale.forLanguageTag("ar")
+        "EN" -> Locale.ENGLISH
+        else -> return base
+    }
+    val config = Configuration(base.resources.configuration).apply {
+        setLocale(locale)
+        setLayoutDirection(locale)
+    }
+    val localizedResources = base.createConfigurationContext(config).resources
+    // ContextWrapper (not the bare configuration context) so startActivity()/Activity lookups
+    // still delegate to the real Activity.
+    return object : ContextWrapper(base) {
+        override fun getResources(): Resources = localizedResources
     }
 }
