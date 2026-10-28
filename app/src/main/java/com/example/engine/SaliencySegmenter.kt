@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import com.example.util.ImageUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.ArrayDeque
@@ -27,7 +28,8 @@ class SaliencySegmenter : SegmentationEngine {
         val w = max(32, (origW * scale).toInt())
         val h = max(32, (origH * scale).toInt())
 
-        val scaled = Bitmap.createScaledBitmap(bitmap, w, h, true)
+        // scaleToNewBitmap never returns the caller's bitmap, so recycling below is safe.
+        val scaled = ImageUtils.scaleToNewBitmap(bitmap, w, h)
         val pixels = IntArray(w * h)
         scaled.getPixels(pixels, 0, w, 0, 0, w, h)
         scaled.recycle()
@@ -72,7 +74,7 @@ class SaliencySegmenter : SegmentationEngine {
 
         val confidence = FloatArray(w * h)
         var minConf = Float.MAX_VALUE
-        var maxConf = Float.MIN_VALUE
+        var maxConf = -Float.MAX_VALUE
 
         for (y in 0 until h) {
             for (x in 0 until w) {
@@ -182,7 +184,7 @@ class SaliencySegmenter : SegmentationEngine {
         val lowResMask = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         lowResMask.setPixels(maskPixels, 0, w, 0, 0, w, h)
 
-        val fullMask = Bitmap.createScaledBitmap(lowResMask, origW, origH, true)
+        val fullMask = ImageUtils.scaleToNewBitmap(lowResMask, origW, origH)
         lowResMask.recycle()
 
         fullMask
