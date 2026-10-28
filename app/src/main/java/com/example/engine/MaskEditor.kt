@@ -245,6 +245,40 @@ object MaskEditor {
     }
 
     /**
+     * Fast, anti-aliased brush stroke drawn straight into the mask with a Canvas.
+     * Erase clears the mask (alpha 0); restore paints it opaque white (alpha 255).
+     * [first] draws a single dot, otherwise a round-capped line from the previous point.
+     */
+    fun brushStroke(
+        mask: Bitmap,
+        fromX: Float,
+        fromY: Float,
+        toX: Float,
+        toY: Float,
+        radius: Float,
+        isErase: Boolean,
+        first: Boolean
+    ) {
+        val canvas = Canvas(mask)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        if (isErase) {
+            paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+        } else {
+            paint.color = Color.WHITE
+            paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC)
+        }
+        if (first) {
+            paint.style = Paint.Style.FILL
+            canvas.drawCircle(toX, toY, radius, paint)
+        } else {
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = radius * 2f
+            paint.strokeCap = Paint.Cap.ROUND
+            canvas.drawLine(fromX, fromY, toX, toY, paint)
+        }
+    }
+
+    /**
      * Clones a bitmap deeply for undo/redo snapshots.
      */
     fun copyBitmap(bitmap: Bitmap): Bitmap {
