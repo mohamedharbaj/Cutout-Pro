@@ -1,10 +1,8 @@
-
 name: Build Cutout Pro APK
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -25,20 +23,36 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # The repository does not ship gradlew / gradle-wrapper.jar, so use the Gradle version
+      # that matches gradle/wrapper/gradle-wrapper.properties (9.3.1) when no wrapper exists.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      # app/build.gradle.kts points the debug signingConfig at <root>/debug.keystore, which is
+      # git-ignored. Without this step packageDebug fails with "Keystore file not found".
+      - name: Create debug keystore
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android -keypass android \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
       - name: Build Debug APK
         run: |
-          if [ ! -f ./gradlew ]; then
-            echo "ERROR: Gradle wrapper (gradlew) is missing."
-            exit 1
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug
+          else
+            gradle assembleDebug
           fi
-          chmod +x ./gradlew
-          ./gradlew assembleDebug
 
       - name: Upload APK
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Cutout-Pro-debug-APK
