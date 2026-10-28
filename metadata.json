@@ -1,6 +1,6 @@
 {
   "name": "Cutout Pro",
-  "description": "Professional on-device background remover and photo editor with precision tools and transparent PNG export.",
+  "description": "Small, simple, offline background eraser: crop, erase (auto / color / magic / manual), smooth edges, save transparent PNG.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }
