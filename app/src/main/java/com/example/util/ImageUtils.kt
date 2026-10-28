@@ -54,9 +54,14 @@ object ImageUtils {
         runCatching {
             // 1. Measure dimensions without full decode
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { stream ->
+            // NOTE: with inJustDecodeBounds = true, decodeStream() ALWAYS returns null (it only fills
+            // `options`). The old code used that null as the "stream failed" signal, so every image
+            // failed with "Cannot open stream for Uri". Track whether the stream opened separately.
+            val streamOpened = context.contentResolver.openInputStream(uri)?.use { stream ->
                 BitmapFactory.decodeStream(stream, null, options)
-            } ?: throw IllegalArgumentException("Cannot open stream for Uri: $uri")
+                true
+            } ?: false
+            if (!streamOpened) throw IllegalArgumentException("Cannot open stream for Uri: $uri")
 
             val origWidth = options.outWidth
             val origHeight = options.outHeight
