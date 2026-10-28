@@ -20,6 +20,11 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // ONNX Runtime ships native libraries for 4 CPU architectures; each device only uses one.
+    // Keep the two ARM ABIs (every real phone/tablet) and drop x86/x86_64 (emulators only).
+    // This is the biggest single size saving and does not change app behaviour on real devices.
+    ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,
@@ -43,7 +48,10 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      // R8 shrinks code and removes the unused icons from material-icons-extended.
+      // Keep rules for ONNX Runtime (JNI) are in proguard-rules.pro.
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
@@ -58,6 +66,18 @@ android {
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
+  }
+  packaging {
+    resources {
+      // License/metadata files duplicated by dependencies; never read at runtime.
+      excludes += listOf(
+        "/META-INF/{AL2.0,LGPL2.1}",
+        "/META-INF/DEPENDENCIES",
+        "/META-INF/LICENSE*",
+        "/META-INF/NOTICE*",
+        "/DebugProbesKt.bin"
+      )
+    }
   }
   buildFeatures {
     compose = true
