@@ -69,6 +69,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -88,6 +89,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -103,6 +105,7 @@ import com.example.ui.components.CheckerboardBackground
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ErrorRed
 import com.example.util.ImageUtils
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -152,12 +155,21 @@ fun EditorScreen(
     var bgType by remember { mutableStateOf(existingProject?.bgType ?: "TRANSPARENT") }
     var bgColor by remember { mutableIntStateOf(existingProject?.bgColor?.toInt() ?: android.graphics.Color.WHITE) }
     var bgImage by remember { mutableStateOf<Bitmap?>(null) }
+    var bgImageChanged by remember { mutableStateOf(false) }
+    // Set when crop replaces the original bitmap, so the saved original file must be rewritten too.
+    var originalChanged by remember { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
+    var saveFailedOnce by remember { mutableStateOf(false) }
 
     var compositedBitmap by remember {
         mutableStateOf(ImageUtils.compositeImage(cutoutBitmap, bgType, bgColor, bgImage))
     }
 
     val undoRedoManager = remember { UndoRedoManager(maxHistory = 10) }
+    // Free the (up to 10 + redo) full-size mask snapshots when leaving the editor.
+    DisposableEffect(undoRedoManager) {
+        onDispose { undoRedoManager.clear() }
+    }
     var canUndo by remember { mutableStateOf(false) }
     var canRedo by remember { mutableStateOf(false) }
 
@@ -197,31 +209,83 @@ fun EditorScreen(
         offset += offsetChange
     }
 
-    // Load existing mask if opening a saved project
+    /**
+     * Runs the segmentation engine. Falls back to the built-in engine if the neural engine
+     * fails (corrupt model, out of memory, ...) instead of crashing the app, and always clears
+     * the "processing" state. The undo snapshot is only pushed once a new mask really exists.
+     */
+    fun runAutoCutout() {
+        if (isProcessing) return
+        scope.launch {
+            isProcessing = true
+            processingMessage = context.getString(R.string.processing_auto)
+            try {
+                val primary = modelManager.getActiveEngine()
+                val newMask = try {
+                    primary.segment(originalBitmap)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    val fallback = modelManager.getFallbackEngine()
+                    if (primary === fallback) throw e
+                    Toast.makeText(context, "AI model failed (${e.message}). Using built-in engine.", Toast.LENGTH_LONG).show()
+                    fallback.segment(originalBitmap)
+                }
+                undoRedoManager.pushState(maskBitmap)
+                maskBitmap = newMask
+                updateCutout()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Toast.makeText(context, "Segmentation failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            } finally {
+                isProcessing = false
+                refreshUndoState()
+            }
+        }
+    }
+
+    /** Runs a (suspending) mask operation with progress, error handling and one undo step. */
+    fun runMaskOperation(message: String, operation: suspend (Bitmap) -> Bitmap) {
+        if (isProcessing) return
+        scope.launch {
+            isProcessing = true
+            processingMessage = message
+            try {
+                val newMask = operation(maskBitmap)
+                undoRedoManager.pushState(maskBitmap)
+                maskBitmap = newMask
+                updateCutout()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Toast.makeText(context, "Operation failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            } finally {
+                isProcessing = false
+                refreshUndoState()
+            }
+        }
+    }
+
+    // Load existing mask if opening a saved project, otherwise run auto segmentation
     LaunchedEffect(existingProject) {
         if (existingProject != null) {
             val savedMask = ImageUtils.loadBitmapFromFile(existingProject.maskImagePath)
             if (savedMask != null) {
-                maskBitmap = savedMask
-                updateCutout()
-            }
-        } else {
-            // First time opening: run auto segmentation!
-            scope.launch {
-                isProcessing = true
-                processingMessage = context.getString(R.string.processing_auto)
-                undoRedoManager.pushState(maskBitmap)
-                val engine = modelManager.getActiveEngine()
-                runCatching {
-                    val autoMask = engine.segment(originalBitmap)
-                    maskBitmap = autoMask
-                    updateCutout()
-                }.onFailure {
-                    Toast.makeText(context, "Segmentation failed: ${it.message}", Toast.LENGTH_SHORT).show()
+                // Guard against a mask whose size no longer matches the original.
+                maskBitmap = if (savedMask.width == originalBitmap.width && savedMask.height == originalBitmap.height) {
+                    savedMask
+                } else {
+                    ImageUtils.scaleToNewBitmap(savedMask, originalBitmap.width, originalBitmap.height)
                 }
-                isProcessing = false
-                refreshUndoState()
             }
+            // The background photo was never restored before (bgImagePath was always saved as null).
+            existingProject.bgImagePath?.let { path ->
+                ImageUtils.loadBitmapFromFile(path)?.let { bgImage = it }
+            }
+            updateCutout()
+        } else {
+            runAutoCutout()
         }
     }
 
@@ -233,6 +297,7 @@ fun EditorScreen(
                 scope.launch {
                     ImageUtils.loadBitmapFromUri(context, uri).onSuccess { pickedBg ->
                         bgImage = pickedBg
+                        bgImageChanged = true
                         bgType = "IMAGE"
                         updateCutout()
                     }
@@ -243,33 +308,84 @@ fun EditorScreen(
 
     // Save project on leave
     fun saveProjectAndExit() {
-        scope.launch {
-            val origPath = existingProject?.originalImagePath
-                ?: ImageUtils.saveBitmapToFile(context, originalBitmap, "orig_${System.currentTimeMillis()}.png")
-            val maskPath = existingProject?.maskImagePath
-                ?: ImageUtils.saveBitmapToFile(context, maskBitmap, "mask_${System.currentTimeMillis()}.png")
-
-            // Create thumbnail
-            val thumb = Bitmap.createScaledBitmap(cutoutBitmap, 180, (180f * cutoutBitmap.height / cutoutBitmap.width).toInt().coerceAtLeast(180), true)
-            val thumbPath = ImageUtils.saveBitmapToFile(context, thumb, "thumb_${System.currentTimeMillis()}.png")
-            thumb.recycle()
-
-            val title = existingProject?.title ?: "Cutout_${System.currentTimeMillis() % 10000}"
-            val entity = ProjectEntity(
-                id = existingProject?.id ?: 0,
-                title = title,
-                updatedAt = System.currentTimeMillis(),
-                originalImagePath = origPath,
-                maskImagePath = maskPath,
-                thumbnailPath = thumbPath,
-                bgType = bgType,
-                bgColor = bgColor.toLong(),
-                bgImagePath = null,
-                width = originalBitmap.width,
-                height = originalBitmap.height
-            )
-            projectRepository.saveProject(entity)
+        if (isSaving) return
+        if (saveFailedOnce) {
+            // Saving already failed once (e.g. storage full): let the user leave on the second try.
             onBack()
+            return
+        }
+        isSaving = true
+        val orig = originalBitmap
+        val mask = maskBitmap
+        val cutout = cutoutBitmap
+        val bg = bgImage
+        scope.launch {
+            try {
+                val stamp = System.currentTimeMillis()
+
+                // Existing projects keep their file names and are OVERWRITTEN. Previously the mask of an
+                // existing project was never re-saved, so every edit was lost after reopening it.
+                val origName = existingProject?.let { File(it.originalImagePath).name } ?: "orig_$stamp.png"
+                val maskName = existingProject?.let { File(it.maskImagePath).name } ?: "mask_$stamp.png"
+
+                val origPath = if (existingProject == null || originalChanged) {
+                    ImageUtils.saveBitmapToFile(context, orig, origName)
+                } else {
+                    existingProject.originalImagePath
+                }
+                val maskPath = ImageUtils.saveBitmapToFile(context, mask, maskName)
+
+                // Thumbnail (new file name each save so Coil never serves a stale cached one).
+                val thumbPath = withContext(Dispatchers.Default) {
+                    val thumbW = 180
+                    val thumbH = (thumbW.toFloat() * cutout.height / cutout.width).toInt().coerceAtLeast(1)
+                    val thumb = ImageUtils.scaleToNewBitmap(cutout, thumbW, thumbH)
+                    try {
+                        ImageUtils.saveBitmapToFile(context, thumb, "thumb_$stamp.png")
+                    } finally {
+                        thumb.recycle()
+                    }
+                }
+                existingProject?.thumbnailPath?.let { old ->
+                    if (old != thumbPath) withContext(Dispatchers.IO) { File(old).delete() }
+                }
+
+                // Persist the custom background photo.
+                var bgPath = existingProject?.bgImagePath
+                if (bg != null && (bgImageChanged || bgPath == null)) {
+                    val newBgPath = ImageUtils.saveBitmapToFile(context, bg, "bg_$stamp.png")
+                    bgPath?.let { old -> withContext(Dispatchers.IO) { File(old).delete() } }
+                    bgPath = newBgPath
+                }
+
+                val entity = ProjectEntity(
+                    id = existingProject?.id ?: 0,
+                    title = existingProject?.title ?: "Cutout_${stamp % 10000}",
+                    createdAt = existingProject?.createdAt ?: stamp, // was reset on every save
+                    updatedAt = stamp,
+                    originalImagePath = origPath,
+                    maskImagePath = maskPath,
+                    thumbnailPath = thumbPath,
+                    bgType = bgType,
+                    bgColor = bgColor.toLong(),
+                    bgImagePath = bgPath,
+                    width = orig.width,
+                    height = orig.height
+                )
+                projectRepository.saveProject(entity)
+                onBack()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                saveFailedOnce = true
+                Toast.makeText(
+                    context,
+                    "Could not save project: ${e.message}. Press back again to leave without saving.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                isSaving = false
+            }
         }
     }
 
@@ -349,16 +465,7 @@ fun EditorScreen(
                                 text = { Text("Re-run Auto Cutout") },
                                 onClick = {
                                     showResetMenu = false
-                                    scope.launch {
-                                        isProcessing = true
-                                        processingMessage = context.getString(R.string.processing_auto)
-                                        undoRedoManager.pushState(maskBitmap)
-                                        val engine = modelManager.getActiveEngine()
-                                        maskBitmap = engine.segment(originalBitmap)
-                                        updateCutout()
-                                        isProcessing = false
-                                        refreshUndoState()
-                                    }
+                                    runAutoCutout()
                                 }
                             )
                             DropdownMenuItem(
@@ -428,13 +535,14 @@ fun EditorScreen(
                 val leftOffset = (canvasWidth - renderedW) / 2f
                 val topOffset = (canvasHeight - renderedH) / 2f
 
-                // Convert screen touch coordinate to image coordinate
+                // Convert a touch coordinate to an image coordinate.
+                // The pointerInput below is declared AFTER graphicsLayer in the modifier chain, so Compose
+                // already hands it positions in the layer's own (un-zoomed, un-panned) space. The old code
+                // inverted the zoom/pan a second time, so brush / wand taps landed in the wrong place
+                // whenever the canvas was zoomed or panned.
                 fun screenToBitmapCoord(screenX: Float, screenY: Float): Pair<Float, Float>? {
-                    val adjustedX = (screenX - canvasWidth / 2f - offset.x) / scale + canvasWidth / 2f
-                    val adjustedY = (screenY - canvasHeight / 2f - offset.y) / scale + canvasHeight / 2f
-
-                    val relX = adjustedX - leftOffset
-                    val relY = adjustedY - topOffset
+                    val relX = screenX - leftOffset
+                    val relY = screenY - topOffset
                     if (relX < 0 || relX >= renderedW || relY < 0 || relY >= renderedH) return null
 
                     val bmpX = (relX / renderedW) * imgWidth
@@ -459,7 +567,7 @@ fun EditorScreen(
                             translationX = offset.x
                             translationY = offset.y
                         }
-                        .pointerInput(selectedTool, scale, offset) {
+                        .pointerInput(selectedTool, fitScale, leftOffset, topOffset, renderedW, renderedH) {
                             when (selectedTool) {
                                 EditorTool.ERASER, EditorTool.REPAIR -> {
                                     detectDragGestures(
@@ -509,20 +617,16 @@ fun EditorScreen(
                                     detectTapGestures { tapPos ->
                                         val coord = screenToBitmapCoord(tapPos.x, tapPos.y)
                                         if (coord != null) {
-                                            scope.launch {
-                                                isProcessing = true
-                                                processingMessage = "Applying Magic Wand..."
-                                                undoRedoManager.pushState(maskBitmap)
-                                                maskBitmap = MaskEditor.magicWandFloodFill(
+                                            val startX = coord.first.toInt()
+                                            val startY = coord.second.toInt()
+                                            runMaskOperation("Applying Magic Wand...") { currentMask ->
+                                                MaskEditor.magicWandFloodFill(
                                                     original = originalBitmap,
-                                                    mask = maskBitmap,
-                                                    startX = coord.first.toInt(),
-                                                    startY = coord.second.toInt(),
+                                                    mask = currentMask,
+                                                    startX = startX,
+                                                    startY = startY,
                                                     tolerance = colorTolerance
                                                 )
-                                                updateCutout()
-                                                isProcessing = false
-                                                refreshUndoState()
                                             }
                                         }
                                     }
@@ -535,19 +639,13 @@ fun EditorScreen(
                                                 coord.first.toInt().coerceIn(0, originalBitmap.width - 1),
                                                 coord.second.toInt().coerceIn(0, originalBitmap.height - 1)
                                             )
-                                            scope.launch {
-                                                isProcessing = true
-                                                processingMessage = "Removing color..."
-                                                undoRedoManager.pushState(maskBitmap)
-                                                maskBitmap = MaskEditor.removeByColor(
+                                            runMaskOperation("Removing color...") { currentMask ->
+                                                MaskEditor.removeByColor(
                                                     original = originalBitmap,
-                                                    mask = maskBitmap,
+                                                    mask = currentMask,
                                                     targetColor = targetColor,
                                                     tolerance = colorTolerance
                                                 )
-                                                updateCutout()
-                                                isProcessing = false
-                                                refreshUndoState()
                                             }
                                         }
                                     }
@@ -559,20 +657,28 @@ fun EditorScreen(
                         },
                     contentAlignment = Alignment.Center
                 ) {
+                    // renderedW/H are in PIXELS. The old code did `px.dp`, i.e. treated pixels as dp, so on any
+                    // screen with density > 1 the image was oversized and no longer matched the touch maths.
+                    val density = LocalDensity.current
                     Image(
                         bitmap = activeDisplayBitmap.asImageBitmap(),
                         contentDescription = "Editing Canvas",
-                        modifier = Modifier.size((renderedW / fitScale).dp * fitScale, (renderedH / fitScale).dp * fitScale)
+                        modifier = Modifier.size(
+                            with(density) { renderedW.toDp() },
+                            with(density) { renderedH.toDp() }
+                        )
                     )
 
                     // Live brush cursor preview
                     touchCursorPos?.let { pos ->
                         Canvas(modifier = Modifier.fillMaxSize()) {
+                            // This Canvas is drawn inside the zoomed layer, so divide by `scale` to keep the
+                            // cursor the same on-screen size as the brush (it was multiplied before = scaled twice).
                             drawCircle(
                                 color = if (selectedTool == EditorTool.ERASER) Color.Red else Color.Cyan,
-                                radius = brushRadius * scale,
+                                radius = brushRadius / scale,
                                 center = pos,
-                                style = Stroke(width = 3.dp.toPx())
+                                style = Stroke(width = 3.dp.toPx() / scale)
                             )
                         }
                     }
@@ -653,14 +759,9 @@ fun EditorScreen(
                 smoothRadius = smoothRadius,
                 onSmoothRadiusChange = { smoothRadius = it },
                 onApplySmooth = {
-                    scope.launch {
-                        isProcessing = true
-                        processingMessage = "Smoothing edges..."
-                        undoRedoManager.pushState(maskBitmap)
-                        maskBitmap = MaskEditor.smoothEdges(maskBitmap, smoothRadius.toInt())
-                        updateCutout()
-                        isProcessing = false
-                        refreshUndoState()
+                    val radius = smoothRadius.toInt()
+                    runMaskOperation("Smoothing edges...") { currentMask ->
+                        MaskEditor.smoothEdges(currentMask, radius)
                     }
                 },
                 selectedCropAspect = selectedCropAspect,
@@ -696,13 +797,20 @@ fun EditorScreen(
                         else -> Rect(0, 0, w, h)
                     }
 
-                    undoRedoManager.pushState(maskBitmap)
-                    val (croppedOrig, croppedMask) = MaskEditor.cropBitmaps(originalBitmap, maskBitmap, cropRect)
-                    originalBitmap = croppedOrig
-                    maskBitmap = croppedMask
-                    updateCutout()
-                    refreshUndoState()
-                    Toast.makeText(context, "Crop applied", Toast.LENGTH_SHORT).show()
+                    // Nothing to crop -> don't create a pointless undo step / rewrite the original.
+                    val isNoOp = selectedCropAspect == "ORIGINAL" || (cropRect.width() >= w && cropRect.height() >= h)
+                    if (!isNoOp) {
+                        val (croppedOrig, croppedMask) = MaskEditor.cropBitmaps(originalBitmap, maskBitmap, cropRect)
+                        originalBitmap = croppedOrig
+                        maskBitmap = croppedMask
+                        originalChanged = true
+                        // The undo history only stores masks of the OLD size; restoring one onto the cropped
+                        // original would stretch it. Crop is therefore a history barrier.
+                        undoRedoManager.clear()
+                        updateCutout()
+                        refreshUndoState()
+                        Toast.makeText(context, "Crop applied", Toast.LENGTH_SHORT).show()
+                    }
                 },
                 bgType = bgType,
                 onBgTypeChange = {
@@ -720,18 +828,7 @@ fun EditorScreen(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                     )
                 },
-                onRunAuto = {
-                    scope.launch {
-                        isProcessing = true
-                        processingMessage = context.getString(R.string.processing_auto)
-                        undoRedoManager.pushState(maskBitmap)
-                        val engine = modelManager.getActiveEngine()
-                        maskBitmap = engine.segment(originalBitmap)
-                        updateCutout()
-                        isProcessing = false
-                        refreshUndoState()
-                    }
-                }
+                onRunAuto = { runAutoCutout() }
             )
 
             // Bottom Tools Scrollable Selector
@@ -747,19 +844,9 @@ fun EditorScreen(
                         icon = Icons.Default.AutoFixHigh,
                         label = stringResource(R.string.tool_auto),
                         isSelected = selectedTool == EditorTool.AUTO,
-                        onClick = {
-                            selectedTool = EditorTool.AUTO
-                            scope.launch {
-                                isProcessing = true
-                                processingMessage = context.getString(R.string.processing_auto)
-                                undoRedoManager.pushState(maskBitmap)
-                                val engine = modelManager.getActiveEngine()
-                                maskBitmap = engine.segment(originalBitmap)
-                                updateCutout()
-                                isProcessing = false
-                                refreshUndoState()
-                            }
-                        }
+                        // Only selects the tool. It used to re-run segmentation on every tap, silently
+                        // replacing manual edits; the panel below has an explicit "Re-Run Cutout" button.
+                        onClick = { selectedTool = EditorTool.AUTO }
                     )
                 }
                 item {
