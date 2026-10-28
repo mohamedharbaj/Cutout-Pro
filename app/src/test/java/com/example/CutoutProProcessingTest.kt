@@ -156,4 +156,46 @@ class CutoutProProcessingTest {
         val redone = undoManager.redo(restored!!)
         assertNotNull(redone)
     }
+
+    @Test
+    fun testSaliencySegmenter_sameSizeAsAnalysisResolution_doesNotRecycleInputOrResult() = runBlocking {
+        // 320x240 == the segmenter's internal analysis size. createScaledBitmap() returns the SAME
+        // instance in that case; the old code then recycled the caller's bitmap and the returned mask.
+        val bitmap = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(Color.WHITE)
+        for (y in 80 until 160) for (x in 100 until 220) bitmap.setPixel(x, y, Color.BLUE)
+
+        val mask = SaliencySegmenter().segment(bitmap)
+
+        assertFalse("input bitmap must not be recycled", bitmap.isRecycled)
+        assertFalse("returned mask must not be recycled", mask.isRecycled)
+        assertEquals(320, mask.width)
+        assertEquals(240, mask.height)
+        assertTrue("mask must be editable", mask.isMutable)
+    }
+
+    @Test
+    fun testScaleToNewBitmap_neverReturnsSourceInstance() {
+        val src = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        val same = ImageUtils.scaleToNewBitmap(src, 64, 64)
+        assertTrue(same !== src)
+        val bigger = ImageUtils.scaleToNewBitmap(src, 128, 96)
+        assertEquals(128, bigger.width)
+        assertEquals(96, bigger.height)
+        assertTrue(bigger.isMutable)
+    }
+
+    @Test
+    fun testCompositeImage_backgroundPhotoIsCenterCroppedNotStretched() {
+        // Wide 200x100 photo: left half red, right half blue, composited under a 100x100 cutout.
+        val bg = Bitmap.createBitmap(200, 100, Bitmap.Config.ARGB_8888)
+        for (y in 0 until 100) for (x in 0 until 200) bg.setPixel(x, y, if (x < 100) Color.RED else Color.BLUE)
+        val cutout = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888) // fully transparent
+
+        val result = ImageUtils.compositeImage(cutout, "IMAGE", Color.WHITE, bg)
+
+        // Center-crop keeps the middle 100x100: red on the left half, blue on the right half.
+        assertEquals(Color.RED, result.getPixel(10, 50))
+        assertEquals(Color.BLUE, result.getPixel(90, 50))
+    }
 }
