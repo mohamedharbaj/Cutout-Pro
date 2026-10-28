@@ -1,8 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:width="66dp"
-        android:height="66dp"
-        android:drawable="@drawable/cutout_pro_icon_fg"
-        android:gravity="center" />
-</layer-list>
+<!-- Logo: left half = photo WITH background, right half = background removed (checkerboard). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group>
+        <clip-path android:pathData="M32,24h44a8,8 0 0 1 8,8v44a8,8 0 0 1 -8,8h-44a8,8 0 0 1 -8,-8v-44a8,8 0 0 1 8,-8z" />
+        <!-- left: original photo (sky, sun, hill) -->
+        <path android:fillColor="#8AB4F8" android:pathData="M24,24h30v60h-30z" />
+        <path android:fillColor="#FDD663" android:pathData="M36,37m-5,0a5,5 0 1 0 10,0a5,5 0 1 0 -10,0" />
+        <path android:fillColor="#81C995" android:pathData="M24,84v-12q15,-10 30,0v12z" />
+        <!-- right: transparent background -->
+        <path android:fillColor="#F1F3F4" android:pathData="M54,24h30v60h-30z" />
+        <path android:fillColor="#BDC1C6" android:pathData="M60,24h6v6h-6z M72,24h6v6h-6z M54,30h6v6h-6z M66,30h6v6h-6z M78,30h6v6h-6z M60,36h6v6h-6z M72,36h6v6h-6z M54,42h6v6h-6z M66,42h6v6h-6z M78,42h6v6h-6z M60,48h6v6h-6z M72,48h6v6h-6z M54,54h6v6h-6z M66,54h6v6h-6z M78,54h6v6h-6z M60,60h6v6h-6z M72,60h6v6h-6z M54,66h6v6h-6z M66,66h6v6h-6z M78,66h6v6h-6z M60,72h6v6h-6z M72,72h6v6h-6z M54,78h6v6h-6z M66,78h6v6h-6z M78,78h6v6h-6z" />
+        <!-- subject kept on both sides -->
+        <path android:fillColor="#E8710A" android:pathData="M36,84C36,67 44,59 54,59C64,59 72,67 72,84z" />
+        <path android:fillColor="#E8710A" android:pathData="M54,47m-9,0a9,9 0 1 0 18,0a9,9 0 1 0 -18,0" />
+        <!-- split line -->
+        <path android:fillColor="#FFFFFF" android:fillAlpha="0.85" android:pathData="M53.4,24h1.2v60h-1.2z" />
+    </group>
+</vector>
