@@ -73,7 +73,7 @@
     <string name="model_builtin">المحرك المدمج الذكي للحواف والتباين</string>
     <string name="model_birefnet">نموذج BiRefNet Lite العصبي (ONNX)</string>
     <string name="model_status_ready">تم التنزيل وجاهز للعمل بدون إنترنت</string>
-    <string name="model_status_not_downloaded">أوزان عصبية اختيارية لدقة فائقة (~34 ميجابايت)</string>
+    <string name="model_status_not_downloaded">أوزان عصبية اختيارية لدقة فائقة (~224 ميجابايت)</string>
     <string name="model_download">تنزيل النموذج العصبي</string>
     <string name="model_downloading">جارٍ تنزيل النموذج...</string>
     <string name="model_download_complete">تم تثبيت النموذج بنجاح</string>
