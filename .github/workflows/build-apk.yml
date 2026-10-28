@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build Android release APK (small)
     runs-on: ubuntu-latest
 
     steps:
@@ -24,38 +24,39 @@ jobs:
           java-version: '17'
 
       # The repository does not ship gradlew / gradle-wrapper.jar, so use the Gradle version
-      # that matches gradle/wrapper/gradle-wrapper.properties (9.3.1) when no wrapper exists.
+      # that matches gradle/wrapper/gradle-wrapper.properties.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      # app/build.gradle.kts points the debug signingConfig at <root>/debug.keystore, which is
-      # git-ignored. Without this step packageDebug fails with "Keystore file not found".
-      - name: Create debug keystore
+      # CI-only keystore so the *release* build (R8 + resource shrinking = small APK) can be signed.
+      # For Google Play, replace it with your own upload key and keep it secret.
+      - name: Create CI signing key
         run: |
-          if [ ! -f debug.keystore ]; then
-            keytool -genkeypair -v \
-              -keystore debug.keystore \
-              -storepass android -keypass android \
-              -alias androiddebugkey \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
+          keytool -genkeypair -v \
+            -keystore my-upload-key.jks \
+            -storepass android123 -keypass android123 \
+            -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Cutout Pro CI"
 
-      - name: Build Debug APK
+      - name: Build release APK
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          STORE_PASSWORD: android123
+          KEY_PASSWORD: android123
         run: |
           if [ -f ./gradlew ]; then
             chmod +x ./gradlew
-            ./gradlew assembleDebug
+            ./gradlew assembleRelease
           else
-            gradle assembleDebug
+            gradle assembleRelease
           fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Cutout-Pro-debug-APK
-          path: app/build/outputs/apk/debug/*.apk
+          name: Cutout-Pro-release-APK
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
