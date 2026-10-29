@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.engine.MaskEditor
+import com.example.engine.MlKitSegmenter
 import com.example.engine.UndoRedoManager
 import com.example.ui.components.BgSwatch
 import com.example.ui.components.BrushIcon
@@ -60,11 +61,13 @@ import com.example.ui.components.EditorTopBar
 import com.example.ui.components.EraserIcon
 import com.example.ui.components.LabeledSlider
 import com.example.ui.components.MagicIcon
+import com.example.ui.components.PersonIcon
+import com.example.ui.components.rememberDelayedFlag
 import com.example.ui.components.StarIcon
 import com.example.ui.components.UndoRedoButton
 import kotlinx.coroutines.launch
 
-enum class EraseTool { COLOR, MAGIC, MANUAL, REPAIR, ZOOM }
+enum class EraseTool { AUTO, COLOR, MAGIC, MANUAL, REPAIR, ZOOM }
 
 private class StrokeState {
     var lastX = 0f
@@ -73,6 +76,7 @@ private class StrokeState {
 
 @StringRes
 private fun toolLabel(tool: EraseTool): Int = when (tool) {
+    EraseTool.AUTO -> R.string.tool_ai
     EraseTool.COLOR -> R.string.tool_color
     EraseTool.MAGIC -> R.string.tool_magic
     EraseTool.MANUAL -> R.string.tool_manual
@@ -82,6 +86,7 @@ private fun toolLabel(tool: EraseTool): Int = when (tool) {
 
 @StringRes
 private fun toolHint(tool: EraseTool): Int = when (tool) {
+    EraseTool.AUTO -> R.string.tool_ai
     EraseTool.COLOR -> R.string.hint_color
     EraseTool.MAGIC -> R.string.hint_magic
     EraseTool.MANUAL -> R.string.hint_manual
@@ -106,14 +111,15 @@ fun EraseScreen(
     val scope = rememberCoroutineScope()
     val undo = remember { UndoRedoManager(maxHistory = 6) }
     DisposableEffect(undo) { onDispose { undo.clear() } }
+    val segmenter = remember { MlKitSegmenter() }
     val stroke = remember { StrokeState() }
 
     var mask by remember { mutableStateOf(initialMask ?: newOpaqueMask(original)) }
     var version by remember { mutableIntStateOf(0) }
     var tool by remember { mutableStateOf(EraseTool.MANUAL) }
     var brushDp by remember { mutableFloatStateOf(28f) }
-    var offsetDp by remember { mutableFloatStateOf(56f) }
-    var tolerance by remember { mutableFloatStateOf(20f) }
+    var offsetDp by remember { mutableFloatStateOf(48f) }
+    var tolerance by remember { mutableFloatStateOf(30f) }
     var bgMode by remember { mutableIntStateOf(0) }
     var zoom by remember { mutableFloatStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
@@ -158,7 +164,22 @@ fun EraseScreen(
         }
     }
 
-    fun tapAt(p: Offset) {
+    fun runAuto() {
+        if (busy) return
+        scope.launch {
+            busy = true
+            runCatching { segmenter.segment(original) }
+                .onSuccess { ai -> commit(MaskEditor.intersect(ai, mask)) }
+                .onFailure { context.toast(context.getString(R.string.error_process)) }
+            busy = false
+        }
+    }
+
+    // Colour / Magic: the crosshair sits above the finger (Cursor Offset), so the finger never hides
+    // the exact pixel. The colour is picked and removed where the crosshair is when the finger lifts.
+    fun applyAtCursor() {
+        if (busy) return
+        val p = cursor ?: return
         val x = xfNow
         val bx = x.toBmpX(p.x).toInt()
         val by = x.toBmpY(p.y).toInt()
@@ -169,7 +190,7 @@ fun EraseScreen(
             busy = true
             runCatching {
                 if (isColor) {
-                    MaskEditor.removeByColor(original, mask, original.getPixel(bx, by), tol)
+                    MaskEditor.removeByColor(original, mask, MaskEditor.pickColor(original, bx, by), tol)
                 } else {
                     MaskEditor.magicWandFloodFill(original, mask, bx, by, tol)
                 }
@@ -215,7 +236,21 @@ fun EraseScreen(
                     .onSizeChanged { canvasSize = it }
                     .pointerInput(tool) {
                         when (tool) {
-                            EraseTool.COLOR, EraseTool.MAGIC -> detectTapGestures { tapAt(it) }
+                            EraseTool.COLOR, EraseTool.MAGIC -> awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                down.consume()
+                                cursor = Offset(down.position.x, down.position.y - offsetDp * density)
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    if (!change.pressed) {
+                                        applyAtCursor()
+                                        break
+                                    }
+                                    cursor = Offset(change.position.x, change.position.y - offsetDp * density)
+                                    change.consume()
+                                }
+                            }
                             EraseTool.MANUAL, EraseTool.REPAIR -> awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
                                 down.consume()
@@ -228,6 +263,7 @@ fun EraseScreen(
                                     change.consume()
                                 }
                             }
+                            EraseTool.AUTO -> Unit
                             EraseTool.ZOOM -> detectTransformGestures { centroid, panChange, zoomChange, _ ->
                                 val oldZoom = zoom
                                 val newZoom = (oldZoom * zoomChange).coerceIn(1f, 8f)
@@ -249,15 +285,21 @@ fun EraseScreen(
             ) {
                 CutoutLayers(original, mask, version, bgMode, xf, Modifier.fillMaxSize())
                 val ring = cursor
-                if ((tool == EraseTool.MANUAL || tool == EraseTool.REPAIR) && ring != null) {
-                    val ringColor = if (tool == EraseTool.MANUAL) Color.Red else Color(0xFF22C55E)
+                if (ring != null && tool != EraseTool.ZOOM && tool != EraseTool.AUTO) {
+                    val isBrush = tool == EraseTool.MANUAL || tool == EraseTool.REPAIR
+                    val ringColor = if (tool == EraseTool.REPAIR) Color(0xFF22C55E) else Color.Red
                     Canvas(Modifier.fillMaxSize()) {
+                        val r = if (isBrush) brushDp * density / 2f else 16.dp.toPx()
                         drawCircle(
                             color = ringColor,
-                            radius = brushDp * density / 2f,
+                            radius = r,
                             center = ring,
                             style = Stroke(width = 2.dp.toPx())
                         )
+                        if (!isBrush) {
+                            drawLine(ringColor, Offset(ring.x - r, ring.y), Offset(ring.x + r, ring.y), 1.5.dp.toPx())
+                            drawLine(ringColor, Offset(ring.x, ring.y - r), Offset(ring.x, ring.y + r), 1.5.dp.toPx())
+                        }
                     }
                 }
             }
@@ -277,12 +319,13 @@ fun EraseScreen(
                         }
                         EraseTool.COLOR, EraseTool.MAGIC -> {
                             LabeledSlider(stringResource(R.string.tolerance), tolerance, 1f..100f) { tolerance = it }
+                            LabeledSlider(stringResource(R.string.cursor_offset), offsetDp, 0f..120f) { offsetDp = it }
                         }
                         else -> Unit
                     }
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    BgSwatch(bgMode, stringResource(R.string.bg)) { bgMode = (bgMode + 1) % 3 }
+                    BgSwatch(bgMode, stringResource(R.string.bg)) { bgMode = (bgMode + 1) % 4 }
                     Text(
                         stringResource(toolHint(tool)),
                         fontSize = 11.sp,
@@ -308,12 +351,13 @@ fun EraseScreen(
                                 )
                                 .clickable(enabled = !busy) {
                                     cursor = null
-                                    tool = t
+                                    if (t == EraseTool.AUTO) runAuto() else tool = t
                                 }
                                 .padding(vertical = 7.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             when (t) {
+                                EraseTool.AUTO -> PersonIcon(tint, 20.dp)
                                 EraseTool.COLOR -> StarIcon(tint, 20.dp)
                                 EraseTool.MAGIC -> MagicIcon(tint, 20.dp)
                                 EraseTool.MANUAL -> EraserIcon(tint, 20.dp)
@@ -335,7 +379,7 @@ fun EraseScreen(
                 }
             }
         }
-        if (busy) BusyOverlay()
+        if (rememberDelayedFlag(busy)) BusyOverlay()
     }
 }
 
