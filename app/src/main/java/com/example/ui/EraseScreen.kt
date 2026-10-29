@@ -28,7 +28,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -52,8 +51,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.engine.AutoCutout
 import com.example.engine.MaskEditor
-import com.example.engine.MlKitSegmenter
 import com.example.engine.UndoRedoManager
 import com.example.ui.components.BgSwatch
 import com.example.ui.components.BrushIcon
@@ -65,13 +64,16 @@ import com.example.ui.components.PersonIcon
 import com.example.ui.components.rememberDelayedFlag
 import com.example.ui.components.StarIcon
 import com.example.ui.components.UndoRedoButton
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class EraseTool { AUTO, COLOR, MAGIC, MANUAL, REPAIR, ZOOM }
 
 private class StrokeState {
     var lastX = 0f
     var lastY = 0f
+    var before: ByteArray? = null
 }
 
 @StringRes
@@ -103,15 +105,15 @@ private fun newOpaqueMask(original: Bitmap): Bitmap =
 fun EraseScreen(
     original: Bitmap,
     initialMask: Bitmap?,
+    history: UndoRedoManager,
     onBack: () -> Unit,
     onDone: (Bitmap) -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current.density
     val scope = rememberCoroutineScope()
-    val undo = remember { UndoRedoManager(maxHistory = 6) }
-    DisposableEffect(undo) { onDispose { undo.clear() } }
-    val segmenter = remember { MlKitSegmenter() }
+    // The history is owned by CutoutApp so it survives Erase -> Smooth -> Saved -> Erase.
+    val undo = history
     val stroke = remember { StrokeState() }
 
     var mask by remember { mutableStateOf(initialMask ?: newOpaqueMask(original)) }
@@ -126,8 +128,9 @@ fun EraseScreen(
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var cursor by remember { mutableStateOf<Offset?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var canUndo by remember { mutableStateOf(false) }
-    var canRedo by remember { mutableStateOf(false) }
+    var undoCount by remember { mutableIntStateOf(undo.undoCount) }
+    var redoCount by remember { mutableIntStateOf(undo.redoCount) }
+    var busyMessage by remember { mutableStateOf<String?>(null) }
 
     val xf = ViewXform(
         canvasSize.width.toFloat(), canvasSize.height.toFloat(),
@@ -137,28 +140,42 @@ fun EraseScreen(
     val xfNow by rememberUpdatedState(xf)
 
     fun refreshUndo() {
-        canUndo = undo.canUndo
-        canRedo = undo.canRedo
+        undoCount = undo.undoCount
+        redoCount = undo.redoCount
     }
 
-    fun commit(newMask: Bitmap) {
-        undo.pushState(mask)
+    /** Replaces the mask with [newMask] and records the change as ONE undo step (done off the UI thread). */
+    suspend fun commit(newMask: Bitmap) {
+        val old = mask
+        withContext(Dispatchers.Default) {
+            val before = undo.snapshotAlpha(old)
+            undo.record(before, newMask)
+        }
         mask = newMask
         version++
         refreshUndo()
     }
 
     fun doUndo() {
-        undo.undo(mask)?.let {
-            mask = it
+        if (busy) return
+        if (undo.undo(mask)) {
             version++
             refreshUndo()
         }
     }
 
     fun doRedo() {
-        undo.redo(mask)?.let {
-            mask = it
+        if (busy) return
+        if (undo.redo(mask)) {
+            version++
+            refreshUndo()
+        }
+    }
+
+    /** Long-press on Undo: back to the original picture, before any background removal. */
+    fun doUndoAll() {
+        if (busy) return
+        if (undo.undoAll(mask) > 0) {
             version++
             refreshUndo()
         }
@@ -168,10 +185,23 @@ fun EraseScreen(
         if (busy) return
         scope.launch {
             busy = true
-            runCatching { segmenter.segment(original) }
-                .onSuccess { ai -> commit(MaskEditor.intersect(ai, mask)) }
-                .onFailure { context.toast(context.getString(R.string.error_process)) }
-            busy = false
+            busyMessage = null
+            try {
+                val outcome = AutoCutout.run(original) {
+                    busyMessage = context.getString(R.string.ai_downloading)
+                }
+                // keep everything already erased by hand: the AI cut only removes more
+                val merged = withContext(Dispatchers.Default) { MaskEditor.intersect(outcome.mask, mask) }
+                commit(merged)
+                if (outcome.usedFallback) context.toast(context.getString(R.string.ai_fallback))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                context.toast(context.getString(R.string.error_process))
+            } finally {
+                busyMessage = null
+                busy = false
+            }
         }
     }
 
@@ -188,16 +218,32 @@ fun EraseScreen(
         val tol = tolerance
         scope.launch {
             busy = true
-            runCatching {
-                if (isColor) {
+            try {
+                val result = if (isColor) {
                     MaskEditor.removeByColor(original, mask, MaskEditor.pickColor(original, bx, by), tol)
                 } else {
                     MaskEditor.magicWandFloodFill(original, mask, bx, by, tol)
                 }
-            }.onSuccess { commit(it) }
-                .onFailure { context.toast(context.getString(R.string.error_process)) }
-            busy = false
+                commit(result)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                context.toast(context.getString(R.string.error_process))
+            } finally {
+                busy = false
+            }
         }
+    }
+
+    fun beginStroke() {
+        stroke.before = undo.snapshotAlpha(mask)
+    }
+
+    fun endStroke() {
+        val before = stroke.before ?: return
+        stroke.before = null
+        undo.record(before, mask)
+        refreshUndo()
     }
 
     fun brushAt(screen: Offset, first: Boolean) {
@@ -207,10 +253,6 @@ fun EraseScreen(
         val bx = x.toBmpX(eff.x)
         val by = x.toBmpY(eff.y)
         val radius = (brushDp * density / 2f) / x.scale
-        if (first) {
-            undo.pushState(mask)
-            refreshUndo()
-        }
         MaskEditor.brushStroke(
             mask, stroke.lastX, stroke.lastY, bx, by, radius,
             isErase = tool == EraseTool.MANUAL, first = first
@@ -225,7 +267,7 @@ fun EraseScreen(
             EditorTopBar(
                 onBack = onBack,
                 actionLabel = stringResource(R.string.done),
-                onAction = { onDone(mask) }
+                onAction = { if (!busy) onDone(mask) }
             )
 
             // Canvas
@@ -254,13 +296,19 @@ fun EraseScreen(
                             EraseTool.MANUAL, EraseTool.REPAIR -> awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
                                 down.consume()
-                                brushAt(down.position, true)
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                    if (!change.pressed) break
-                                    brushAt(change.position, false)
-                                    change.consume()
+                                if (busy) return@awaitEachGesture
+                                beginStroke()
+                                try {
+                                    brushAt(down.position, true)
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                        if (!change.pressed) break
+                                        brushAt(change.position, false)
+                                        change.consume()
+                                    }
+                                } finally {
+                                    endStroke()
                                 }
                             }
                             EraseTool.AUTO -> Unit
@@ -334,8 +382,11 @@ fun EraseScreen(
                         maxLines = 2,
                         modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
                     )
-                    UndoRedoButton(false, stringResource(R.string.undo), canUndo) { doUndo() }
-                    UndoRedoButton(true, stringResource(R.string.redo), canRedo) { doRedo() }
+                    UndoRedoButton(
+                        false, stringResource(R.string.undo), undoCount > 0,
+                        count = undoCount, onLongClick = { doUndoAll() }
+                    ) { doUndo() }
+                    UndoRedoButton(true, stringResource(R.string.redo), redoCount > 0, count = redoCount) { doRedo() }
                 }
                 Row(Modifier.fillMaxWidth()) {
                     for (t in EraseTool.entries) {
@@ -379,12 +430,12 @@ fun EraseScreen(
                 }
             }
         }
-        if (rememberDelayedFlag(busy)) BusyOverlay()
+        if (rememberDelayedFlag(busy)) BusyOverlay(busyMessage)
     }
 }
 
 @Composable
-fun BusyOverlay() {
+fun BusyOverlay(message: String? = null) {
     Box(
         Modifier
             .fillMaxSize()
@@ -395,7 +446,12 @@ fun BusyOverlay() {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             CircularProgressIndicator()
             Spacer(Modifier.height(6.dp))
-            Text(stringResource(R.string.processing), color = Color.White)
+            Text(
+                message ?: stringResource(R.string.processing),
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 32.dp)
+            )
         }
     }
 }
