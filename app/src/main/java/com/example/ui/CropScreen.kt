@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.ui.components.CheckerboardBackground
+import com.example.ui.components.EditorTopBar
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -85,18 +86,12 @@ fun CropScreen(bitmap: Bitmap, onBack: () -> Unit, onDone: (Bitmap) -> Unit) {
             .background(MaterialTheme.colorScheme.background)
             .safeDrawingPadding()
     ) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
-            }
-            Text(stringResource(R.string.crop_title), style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { finish() }) {
-                Icon(Icons.Filled.Check, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.done))
-            }
-        }
+        EditorTopBar(
+            onBack = onBack,
+            title = stringResource(R.string.crop_title),
+            actionLabel = stringResource(R.string.done),
+            onAction = { finish() }
+        )
 
         Box(
             Modifier
@@ -175,11 +170,12 @@ fun CropScreen(bitmap: Bitmap, onBack: () -> Unit, onDone: (Bitmap) -> Unit) {
         Text(
             stringResource(R.string.crop_hint),
             style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.surface)
-                .padding(vertical = 18.dp)
+                .padding(vertical = 12.dp)
         )
     }
 }
