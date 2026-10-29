@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.util.PatternFilterable
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
@@ -78,6 +80,23 @@ android {
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
+  }
+}
+
+// The slim app no longer uses Room / ONNX / DataStore / material-icons-extended, but the old files that
+// need them are still in the repo (data/**, ModelManager, OnnxSegmenter, ui/screens/**,
+// CutoutProApplication). They are not referenced by MainActivity/CutoutApp, so we keep them out of
+// the Kotlin compilation. This is what fixes "Unresolved reference 'room'" and the missing
+// icons/strings errors that made :app:compileReleaseKotlin fail.
+tasks.configureEach {
+  if (name.startsWith("compile") && name.endsWith("Kotlin") && this is PatternFilterable) {
+    exclude(
+      "com/example/CutoutProApplication.kt",
+      "com/example/data/**",
+      "com/example/engine/ModelManager.kt",
+      "com/example/engine/OnnxSegmenter.kt",
+      "com/example/ui/screens/**"
+    )
   }
 }
 
