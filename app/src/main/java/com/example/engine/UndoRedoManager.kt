@@ -7,11 +7,18 @@ class UndoRedoManager(private val maxHistory: Int = 10) {
     private val undoStack = LinkedList<Bitmap>()
     private val redoStack = LinkedList<Bitmap>()
 
+    // Counts how many times undo has been pressed (resets when a new action is pushed)
+    private var _undoPressCount: Int = 0
+    val undoPressCount: Int get() = _undoPressCount
+
     val canUndo: Boolean
         get() = undoStack.isNotEmpty()
 
     val canRedo: Boolean
         get() = redoStack.isNotEmpty()
+
+    val undoStackSize: Int
+        get() = undoStack.size
 
     fun pushState(currentMask: Bitmap) {
         val copy = MaskEditor.copyBitmap(currentMask)
@@ -22,10 +29,13 @@ class UndoRedoManager(private val maxHistory: Int = 10) {
         }
         // Clear redo stack on new action
         clearRedo()
+        // Reset the undo press counter when a new edit is pushed
+        _undoPressCount = 0
     }
 
     fun undo(currentMask: Bitmap): Bitmap? {
         if (undoStack.isEmpty()) return null
+        _undoPressCount++
         val previousState = undoStack.removeLast()
         redoStack.addLast(MaskEditor.copyBitmap(currentMask))
         return previousState
@@ -43,6 +53,7 @@ class UndoRedoManager(private val maxHistory: Int = 10) {
             undoStack.removeFirst().recycle()
         }
         clearRedo()
+        _undoPressCount = 0
     }
 
     private fun clearRedo() {
