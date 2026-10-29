@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import android.content.ClipData
+import android.content.Intent
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.compose.foundation.Image
@@ -19,10 +21,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -260,6 +265,125 @@ fun ExportBottomSheet(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(stringResource(R.string.save_to_gallery))
                     }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ── Share to 3 apps ──────────────────────────────────────────────
+            Text(
+                text = "Share with",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // 1) Change Background / Superimpose — generic image share
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            isSaving = true
+                            val bmp = if (selectedFormat == "PNG") cutoutBitmap else jpegBitmap
+                            val result = ImageUtils.createShareIntent(
+                                context = context,
+                                bitmap = bmp,
+                                isPng = (selectedFormat == "PNG")
+                            )
+                            isSaving = false
+                            result.onSuccess { intent ->
+                                // Re-wrap as a chooser limited to known BG-change apps
+                                context.startActivity(intent)
+                            }.onFailure {
+                                Toast.makeText(context, R.string.export_failed, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp),
+                    enabled = !isSaving
+                ) {
+                    Icon(Icons.Default.Wallpaper, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Change BG", style = MaterialTheme.typography.labelSmall)
+                }
+
+                // 2) White Background → JPEG share
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            isSaving = true
+                            val whiteBg = ImageUtils.compositeImage(
+                                cutoutBitmap, "COLOR",
+                                android.graphics.Color.WHITE, null
+                            )
+                            val result = ImageUtils.createShareIntent(
+                                context = context,
+                                bitmap = whiteBg,
+                                isPng = false   // always JPEG for white-BG
+                            )
+                            isSaving = false
+                            result.onSuccess { intent -> context.startActivity(intent) }
+                                .onFailure {
+                                    Toast.makeText(context, R.string.export_failed, Toast.LENGTH_SHORT).show()
+                                }
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp),
+                    enabled = !isSaving
+                ) {
+                    Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("White BG", style = MaterialTheme.typography.labelSmall)
+                }
+
+                // 3) WhatsApp Sticker — share PNG to WhatsApp
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            isSaving = true
+                            val result = ImageUtils.createShareIntent(
+                                context = context,
+                                bitmap = cutoutBitmap,
+                                isPng = true
+                            )
+                            isSaving = false
+                            result.onSuccess { generic ->
+                                // Try to open WhatsApp directly; fall back to chooser.
+                                val waIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "image/png"
+                                    `package` = "com.whatsapp"
+                                    // Re-use the URI from the generic intent's ClipData
+                                    val uri = generic.clipData?.getItemAt(0)?.uri
+                                    if (uri != null) {
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        clipData = ClipData.newRawUri("Sticker", uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                }
+                                val pm = context.packageManager
+                                if (waIntent.resolveActivity(pm) != null) {
+                                    context.startActivity(waIntent)
+                                } else {
+                                    // WhatsApp not installed — fall back to the chooser
+                                    context.startActivity(generic)
+                                }
+                            }.onFailure {
+                                Toast.makeText(context, R.string.export_failed, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp),
+                    enabled = !isSaving
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("WhatsApp", style = MaterialTheme.typography.labelSmall)
                 }
             }
 
