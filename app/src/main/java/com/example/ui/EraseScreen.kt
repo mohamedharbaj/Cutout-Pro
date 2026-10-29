@@ -19,17 +19,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -53,13 +50,21 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.engine.MaskEditor
-import com.example.engine.SaliencySegmenter
 import com.example.engine.UndoRedoManager
+import com.example.ui.components.BgSwatch
+import com.example.ui.components.BrushIcon
+import com.example.ui.components.EditorTopBar
+import com.example.ui.components.EraserIcon
+import com.example.ui.components.LabeledSlider
+import com.example.ui.components.MagicIcon
+import com.example.ui.components.StarIcon
+import com.example.ui.components.UndoRedoButton
 import kotlinx.coroutines.launch
 
-enum class EraseTool { AUTO, COLOR, MAGIC, MANUAL, REPAIR, ZOOM }
+enum class EraseTool { COLOR, MAGIC, MANUAL, REPAIR, ZOOM }
 
 private class StrokeState {
     var lastX = 0f
@@ -68,7 +73,6 @@ private class StrokeState {
 
 @StringRes
 private fun toolLabel(tool: EraseTool): Int = when (tool) {
-    EraseTool.AUTO -> R.string.tool_ai
     EraseTool.COLOR -> R.string.tool_color
     EraseTool.MAGIC -> R.string.tool_magic
     EraseTool.MANUAL -> R.string.tool_manual
@@ -78,7 +82,6 @@ private fun toolLabel(tool: EraseTool): Int = when (tool) {
 
 @StringRes
 private fun toolHint(tool: EraseTool): Int = when (tool) {
-    EraseTool.AUTO -> R.string.tool_ai
     EraseTool.COLOR -> R.string.hint_color
     EraseTool.MAGIC -> R.string.hint_magic
     EraseTool.MANUAL -> R.string.hint_manual
@@ -103,7 +106,6 @@ fun EraseScreen(
     val scope = rememberCoroutineScope()
     val undo = remember { UndoRedoManager(maxHistory = 6) }
     DisposableEffect(undo) { onDispose { undo.clear() } }
-    val segmenter = remember { SaliencySegmenter() }
     val stroke = remember { StrokeState() }
 
     var mask by remember { mutableStateOf(initialMask ?: newOpaqueMask(original)) }
@@ -156,16 +158,6 @@ fun EraseScreen(
         }
     }
 
-    fun runAuto() {
-        scope.launch {
-            busy = true
-            runCatching { segmenter.segment(original) }
-                .onSuccess { commit(it) }
-                .onFailure { context.toast(context.getString(R.string.error_process)) }
-            busy = false
-        }
-    }
-
     fun tapAt(p: Offset) {
         val x = xfNow
         val bx = x.toBmpX(p.x).toInt()
@@ -209,18 +201,11 @@ fun EraseScreen(
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-            // Top bar
-            Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
-                }
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = { onDone(mask) }) {
-                    Icon(Icons.Filled.Check, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(stringResource(R.string.done))
-                }
-            }
+            EditorTopBar(
+                onBack = onBack,
+                actionLabel = stringResource(R.string.done),
+                onAction = { onDone(mask) }
+            )
 
             // Canvas
             Box(
@@ -259,7 +244,6 @@ fun EraseScreen(
                                 }
                                 zoom = newZoom
                             }
-                            EraseTool.AUTO -> Unit
                         }
                     }
             ) {
@@ -278,42 +262,44 @@ fun EraseScreen(
                 }
             }
 
-            // Controls
+            // Controls (compact)
             Column(
                 Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface)
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .padding(top = 4.dp)
             ) {
-                when (tool) {
-                    EraseTool.MANUAL, EraseTool.REPAIR -> {
-                        LabeledSlider(stringResource(R.string.brush_size), brushDp, 8f..80f) { brushDp = it }
-                        LabeledSlider(stringResource(R.string.cursor_offset), offsetDp, 0f..120f) { offsetDp = it }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                    when (tool) {
+                        EraseTool.MANUAL, EraseTool.REPAIR -> {
+                            LabeledSlider(stringResource(R.string.brush_size), brushDp, 8f..80f) { brushDp = it }
+                            LabeledSlider(stringResource(R.string.cursor_offset), offsetDp, 0f..120f) { offsetDp = it }
+                        }
+                        EraseTool.COLOR, EraseTool.MAGIC -> {
+                            LabeledSlider(stringResource(R.string.tolerance), tolerance, 1f..100f) { tolerance = it }
+                        }
+                        else -> Unit
                     }
-                    EraseTool.COLOR, EraseTool.MAGIC -> {
-                        LabeledSlider(stringResource(R.string.tolerance), tolerance, 1f..100f) { tolerance = it }
-                    }
-                    else -> Unit
                 }
-                if (tool != EraseTool.AUTO) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BgSwatch(bgMode, stringResource(R.string.bg)) { bgMode = (bgMode + 1) % 3 }
                     Text(
                         stringResource(toolHint(tool)),
-                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                        maxLines = 2,
+                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
                     )
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { bgMode = (bgMode + 1) % 3 }) { Text(stringResource(R.string.bg)) }
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { doUndo() }, enabled = canUndo) { Text(stringResource(R.string.undo)) }
-                    TextButton(onClick = { doRedo() }, enabled = canRedo) { Text(stringResource(R.string.redo)) }
+                    UndoRedoButton(false, stringResource(R.string.undo), canUndo) { doUndo() }
+                    UndoRedoButton(true, stringResource(R.string.redo), canRedo) { doRedo() }
                 }
                 Row(Modifier.fillMaxWidth()) {
                     for (t in EraseTool.entries) {
                         val selected = t == tool
-                        Box(
+                        val tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onSurface
+                        Column(
                             Modifier
                                 .weight(1f)
                                 .background(
@@ -322,21 +308,27 @@ fun EraseScreen(
                                 )
                                 .clickable(enabled = !busy) {
                                     cursor = null
-                                    if (t == EraseTool.AUTO) {
-                                        runAuto()
-                                    } else {
-                                        tool = t
-                                    }
+                                    tool = t
                                 }
-                                .padding(vertical = 14.dp),
-                            contentAlignment = Alignment.Center
+                                .padding(vertical = 7.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            when (t) {
+                                EraseTool.COLOR -> StarIcon(tint, 20.dp)
+                                EraseTool.MAGIC -> MagicIcon(tint, 20.dp)
+                                EraseTool.MANUAL -> EraserIcon(tint, 20.dp)
+                                EraseTool.REPAIR -> BrushIcon(tint, 20.dp)
+                                EraseTool.ZOOM -> Icon(
+                                    Icons.Filled.Search, contentDescription = null,
+                                    tint = tint, modifier = Modifier.size(20.dp)
+                                )
+                            }
                             Text(
                                 stringResource(toolLabel(t)),
-                                style = MaterialTheme.typography.labelMedium,
+                                fontSize = 11.sp,
+                                maxLines = 1,
                                 textAlign = TextAlign.Center,
-                                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
-                                else MaterialTheme.colorScheme.onSurface
+                                color = tint
                             )
                         }
                     }
@@ -344,14 +336,6 @@ fun EraseScreen(
             }
         }
         if (busy) BusyOverlay()
-    }
-}
-
-@Composable
-fun LabeledSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onChange: (Float) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(110.dp))
-        Slider(value = value, onValueChange = onChange, valueRange = range, modifier = Modifier.weight(1f))
     }
 }
 
