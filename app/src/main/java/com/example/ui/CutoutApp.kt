@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +41,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.ui.components.CheckerboardBackground
+import com.example.ui.components.EditorTopBar
 import com.example.util.ImageUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -148,6 +150,7 @@ fun CutoutApp() {
             Step.SAVED -> if (currentResult != null) {
                 SavedScreen(
                     cutout = currentResult,
+                    onBack = { step = Step.SMOOTH },
                     onShare = {
                         scope.launch {
                             ImageUtils.createShareIntent(context, currentResult, true)
@@ -196,12 +199,13 @@ private fun HomeScreen(onPick: () -> Unit) {
         Image(
             painter = painterResource(R.drawable.ic_launcher_foreground),
             contentDescription = null,
-            modifier = Modifier.size(150.dp)
+            modifier = Modifier.size(96.dp)
         )
         Spacer(Modifier.height(8.dp))
         Text(
             stringResource(R.string.app_name),
             style = MaterialTheme.typography.headlineLarge,
+            color = MaterialTheme.colorScheme.onBackground,
             fontWeight = FontWeight.Bold
         )
         Spacer(Modifier.height(12.dp))
@@ -211,8 +215,8 @@ private fun HomeScreen(onPick: () -> Unit) {
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(40.dp))
-        Button(onClick = onPick, modifier = Modifier.fillMaxWidth().height(72.dp)) {
+        Spacer(Modifier.height(28.dp))
+        Button(onClick = onPick, modifier = Modifier.fillMaxWidth().height(52.dp)) {
             Text(stringResource(R.string.select_photo), style = MaterialTheme.typography.titleMedium)
         }
     }
@@ -221,20 +225,23 @@ private fun HomeScreen(onPick: () -> Unit) {
 @Composable
 private fun SavedScreen(
     cutout: Bitmap,
+    onBack: () -> Unit,
     onShare: () -> Unit,
     onSaveJpeg: () -> Unit,
     onFinish: () -> Unit
 ) {
+    val primary = MaterialTheme.colorScheme.primary
     Column(
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .safeDrawingPadding()
     ) {
-        Text(
-            stringResource(R.string.saved_title),
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(16.dp)
+        EditorTopBar(
+            onBack = onBack,
+            title = stringResource(R.string.saved_title),
+            actionLabel = stringResource(R.string.finish),
+            onAction = onFinish
         )
         Box(Modifier.weight(1f).fillMaxWidth()) {
             CheckerboardBackground()
@@ -245,7 +252,13 @@ private fun SavedScreen(
                 modifier = Modifier.fillMaxSize()
             )
         }
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Text(
                 stringResource(R.string.saved_to),
                 style = MaterialTheme.typography.bodySmall,
@@ -254,11 +267,12 @@ private fun SavedScreen(
             Button(onClick = onShare, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.share))
             }
-            OutlinedButton(onClick = onSaveJpeg, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.save_jpeg))
-            }
-            OutlinedButton(onClick = onFinish, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.finish))
+            OutlinedButton(
+                onClick = onSaveJpeg,
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, primary)
+            ) {
+                Text(stringResource(R.string.save_jpeg), color = primary)
             }
         }
     }
