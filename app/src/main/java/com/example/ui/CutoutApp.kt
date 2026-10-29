@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.ui.components.CheckerboardBackground
 import com.example.ui.components.EditorTopBar
+import com.example.ui.components.rememberDelayedFlag
 import com.example.util.ImageUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -55,6 +56,8 @@ fun CutoutApp() {
     val scope = rememberCoroutineScope()
 
     var step by remember { mutableStateOf(Step.HOME) }
+    // [source] = the picture exactly as picked (never changed); [original] = the cropped working copy.
+    var source by remember { mutableStateOf<Bitmap?>(null) }
     var original by remember { mutableStateOf<Bitmap?>(null) }
     var mask by remember { mutableStateOf<Bitmap?>(null) }
     var result by remember { mutableStateOf<Bitmap?>(null) }
@@ -66,6 +69,7 @@ fun CutoutApp() {
                 busy = true
                 ImageUtils.loadBitmapFromUri(context, uri)
                     .onSuccess {
+                        source = it
                         original = it
                         mask = null
                         result = null
@@ -80,7 +84,10 @@ fun CutoutApp() {
     BackHandler(enabled = step != Step.HOME) {
         step = when (step) {
             Step.CROP -> Step.HOME
-            Step.ERASE -> Step.CROP
+            Step.ERASE -> {
+                mask = null   // going back restores the picture as it was before any erasing
+                Step.CROP
+            }
             Step.SMOOTH -> Step.ERASE
             Step.SAVED -> Step.SMOOTH
             Step.HOME -> Step.HOME
@@ -96,15 +103,13 @@ fun CutoutApp() {
                 picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             })
 
-            Step.CROP -> if (orig != null) {
+            Step.CROP -> if (source != null) {
                 CropScreen(
-                    bitmap = orig,
+                    bitmap = source!!,
                     onBack = { step = Step.HOME },
                     onDone = { cropped ->
-                        if (cropped !== orig) {
-                            original = cropped
-                            mask = null
-                        }
+                        original = cropped
+                        mask = null
                         step = Step.ERASE
                     }
                 )
@@ -114,7 +119,10 @@ fun CutoutApp() {
                 EraseScreen(
                     original = orig,
                     initialMask = currentMask,
-                    onBack = { step = Step.CROP },
+                    onBack = {
+                        mask = null   // back = picture as it was before erasing
+                        step = Step.CROP
+                    },
                     onDone = { finished ->
                         mask = finished
                         step = Step.SMOOTH
@@ -174,6 +182,7 @@ fun CutoutApp() {
                         }
                     },
                     onFinish = {
+                        source = null
                         original = null
                         mask = null
                         result = null
@@ -182,7 +191,7 @@ fun CutoutApp() {
                 )
             }
         }
-        if (busy) BusyOverlay()
+        if (rememberDelayedFlag(busy)) BusyOverlay()
     }
 }
 
