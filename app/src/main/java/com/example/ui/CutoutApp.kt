@@ -29,7 +29,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -40,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.engine.UndoRedoManager
 import com.example.ui.components.CheckerboardBackground
 import com.example.ui.components.EditorTopBar
 import com.example.ui.components.rememberDelayedFlag
@@ -62,6 +65,9 @@ fun CutoutApp() {
     var mask by remember { mutableStateOf<Bitmap?>(null) }
     var result by remember { mutableStateOf<Bitmap?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // One history for the whole editing session: it keeps every edit back to the original picture
+    // while moving between Erase / Smooth / Saved, and is cleared only when the picture changes.
+    val history = remember { UndoRedoManager() }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -69,6 +75,7 @@ fun CutoutApp() {
                 busy = true
                 ImageUtils.loadBitmapFromUri(context, uri)
                     .onSuccess {
+                        history.clear()
                         source = it
                         original = it
                         mask = null
@@ -85,6 +92,7 @@ fun CutoutApp() {
         step = when (step) {
             Step.CROP -> Step.HOME
             Step.ERASE -> {
+                history.clear()
                 mask = null   // going back restores the picture as it was before any erasing
                 Step.CROP
             }
@@ -108,6 +116,7 @@ fun CutoutApp() {
                     bitmap = source!!,
                     onBack = { step = Step.HOME },
                     onDone = { cropped ->
+                        history.clear()
                         original = cropped
                         mask = null
                         step = Step.ERASE
@@ -119,7 +128,9 @@ fun CutoutApp() {
                 EraseScreen(
                     original = orig,
                     initialMask = currentMask,
+                    history = history,
                     onBack = {
+                        history.clear()
                         mask = null   // back = picture as it was before erasing
                         step = Step.CROP
                     },
@@ -159,29 +170,8 @@ fun CutoutApp() {
                 SavedScreen(
                     cutout = currentResult,
                     onBack = { step = Step.SMOOTH },
-                    onShare = {
-                        scope.launch {
-                            ImageUtils.createShareIntent(context, currentResult, true)
-                                .onSuccess { context.startActivity(it) }
-                                .onFailure { context.toast(context.getString(R.string.error_process)) }
-                        }
-                    },
-                    onSaveJpeg = {
-                        scope.launch {
-                            busy = true
-                            val flat = withContext(Dispatchers.Default) {
-                                ImageUtils.compositeImage(currentResult, "COLOR", AColor.WHITE, null)
-                            }
-                            val saved = ImageUtils.saveToGallery(context, flat, "JPEG", 95)
-                            context.toast(
-                                context.getString(
-                                    if (saved.isSuccess) R.string.jpeg_saved else R.string.error_save
-                                )
-                            )
-                            busy = false
-                        }
-                    },
                     onFinish = {
+                        history.clear()
                         source = null
                         original = null
                         mask = null
@@ -206,9 +196,9 @@ private fun HomeScreen(onPick: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Image(
-            painter = painterResource(R.drawable.ic_launcher_foreground),
+            painter = painterResource(R.drawable.ic_logo),
             contentDescription = null,
-            modifier = Modifier.size(96.dp)
+            modifier = Modifier.size(104.dp).clip(RoundedCornerShape(24.dp))
         )
         Spacer(Modifier.height(8.dp))
         Text(
@@ -227,62 +217,6 @@ private fun HomeScreen(onPick: () -> Unit) {
         Spacer(Modifier.height(28.dp))
         Button(onClick = onPick, modifier = Modifier.fillMaxWidth().height(52.dp)) {
             Text(stringResource(R.string.select_photo), style = MaterialTheme.typography.titleMedium)
-        }
-    }
-}
-
-@Composable
-private fun SavedScreen(
-    cutout: Bitmap,
-    onBack: () -> Unit,
-    onShare: () -> Unit,
-    onSaveJpeg: () -> Unit,
-    onFinish: () -> Unit
-) {
-    val primary = MaterialTheme.colorScheme.primary
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .safeDrawingPadding()
-    ) {
-        EditorTopBar(
-            onBack = onBack,
-            title = stringResource(R.string.saved_title),
-            actionLabel = stringResource(R.string.finish),
-            onAction = onFinish
-        )
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            CheckerboardBackground()
-            Image(
-                bitmap = cutout.asImageBitmap(),
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                stringResource(R.string.saved_to),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Button(onClick = onShare, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.share))
-            }
-            OutlinedButton(
-                onClick = onSaveJpeg,
-                modifier = Modifier.fillMaxWidth(),
-                border = BorderStroke(1.dp, primary)
-            ) {
-                Text(stringResource(R.string.save_jpeg), color = primary)
-            }
         }
     }
 }
