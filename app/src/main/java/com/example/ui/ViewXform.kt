@@ -17,6 +17,8 @@ class ViewXform(
 ) {
     private val fit: Float =
         if (canvasW > 0f && canvasH > 0f && bmpW > 0 && bmpH > 0) min(canvasW / bmpW, canvasH / bmpH) else 1f
+    /** False until the canvas has been measured (avoids drawing one wrong frame at the wrong size). */
+    val valid: Boolean = canvasW > 0f && canvasH > 0f
     val scale: Float = fit * zoom
     val left: Float = (canvasW - bmpW * scale) / 2f + pan.x
     val top: Float = (canvasH - bmpH * scale) / 2f + pan.y
