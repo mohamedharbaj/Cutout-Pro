@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
@@ -48,6 +50,9 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.ui.components.CheckerboardBackground
 import com.example.ui.components.EditorTopBar
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -62,13 +67,22 @@ fun CropScreen(bitmap: Bitmap, onBack: () -> Unit, onDone: (Bitmap) -> Unit) {
     var r by remember { mutableFloatStateOf(bw.toFloat()) }
     var b by remember { mutableFloatStateOf(bh.toFloat()) }
 
-    val xf = ViewXform(canvasSize.width.toFloat(), canvasSize.height.toFloat(), bw, bh)
+    // Margin around the picture so the crop edges/corners are never glued to the screen border.
+    val marginPx = with(LocalDensity.current) { 28.dp.toPx() }
+    val xf = ViewXform(
+        (canvasSize.width - 2 * marginPx).coerceAtLeast(0f),
+        (canvasSize.height - 2 * marginPx).coerceAtLeast(0f),
+        bw, bh, 1f, Offset(marginPx, marginPx)
+    )
+    val scope = rememberCoroutineScope()
+    var working by remember { mutableStateOf(false) }
     val xfNow by rememberUpdatedState(xf)
     val imgPaint = remember { Paint(Paint.FILTER_BITMAP_FLAG) }
     val minSize = 32f
     val accent = Color(0xFFFF00FF)
 
     fun finish() {
+        if (working) return
         val left = l.roundToInt().coerceIn(0, bw - 1)
         val top = t.roundToInt().coerceIn(0, bh - 1)
         val right = r.roundToInt().coerceIn(left + 1, bw)
@@ -76,7 +90,14 @@ fun CropScreen(bitmap: Bitmap, onBack: () -> Unit, onDone: (Bitmap) -> Unit) {
         if (left == 0 && top == 0 && right == bw && bottom == bh) {
             onDone(bitmap)
         } else {
-            onDone(Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top))
+            // Cut the bitmap off the main thread so the screen change is smooth (no freeze / flash).
+            working = true
+            scope.launch {
+                val cropped = withContext(Dispatchers.Default) {
+                    Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
+                }
+                onDone(cropped)
+            }
         }
     }
 
@@ -90,6 +111,7 @@ fun CropScreen(bitmap: Bitmap, onBack: () -> Unit, onDone: (Bitmap) -> Unit) {
             onBack = onBack,
             title = stringResource(R.string.crop_title),
             actionLabel = stringResource(R.string.done),
+            actionEnabled = !working,
             onAction = { finish() }
         )
 
@@ -102,7 +124,7 @@ fun CropScreen(bitmap: Bitmap, onBack: () -> Unit, onDone: (Bitmap) -> Unit) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val x = xfNow
-                        val slop = 36.dp.toPx()
+                        val slop = 44.dp.toPx()
                         val sl = x.toScreenX(l)
                         val sr = x.toScreenX(r)
                         val st = x.toScreenY(t)
@@ -145,6 +167,7 @@ fun CropScreen(bitmap: Bitmap, onBack: () -> Unit, onDone: (Bitmap) -> Unit) {
         ) {
             CheckerboardBackground()
             Canvas(Modifier.fillMaxSize()) {
+                if (canvasSize.width == 0) return@Canvas
                 drawIntoCanvas { c -> c.nativeCanvas.drawBitmap(bitmap, null, xf.dst(), imgPaint) }
                 val sl = xf.toScreenX(l)
                 val sr = xf.toScreenX(r)
@@ -163,7 +186,7 @@ fun CropScreen(bitmap: Bitmap, onBack: () -> Unit, onDone: (Bitmap) -> Unit) {
                     Offset(sl, my), Offset(sr, my),
                     Offset(sl, sb), Offset(mx, sb), Offset(sr, sb)
                 )
-                for (h in handles) drawCircle(accent, radius = 7.dp.toPx(), center = h)
+                for (h in handles) drawCircle(accent, radius = 9.dp.toPx(), center = h)
             }
         }
 
