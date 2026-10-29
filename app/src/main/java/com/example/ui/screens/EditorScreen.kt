@@ -52,6 +52,8 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -138,6 +140,18 @@ fun EditorScreen(
     val scope = rememberCoroutineScope()
 
     var originalBitmap by remember { mutableStateOf(initialBitmap) }
+    // Snapshot of the mask as it was when the editor first opened (all-white = untouched).
+    // Updated once when an existing project is loaded, then stays fixed.
+    // Used to restore the original state when the user presses Back once.
+    var initialMaskSnapshot by remember {
+        mutableStateOf(
+            Bitmap.createBitmap(
+                initialBitmap.width,
+                initialBitmap.height,
+                Bitmap.Config.ARGB_8888
+            ).apply { eraseColor(android.graphics.Color.WHITE) }
+        )
+    }
     var maskBitmap by remember {
         mutableStateOf(
             Bitmap.createBitmap(
@@ -147,6 +161,8 @@ fun EditorScreen(
             ).apply { eraseColor(android.graphics.Color.WHITE) }
         )
     }
+    // Whether the user has made any edits since opening (used to decide what Back does).
+    var hasUnsavedEdits by remember { mutableStateOf(false) }
     var cutoutBitmap by remember {
         mutableStateOf(ImageUtils.applyMask(originalBitmap, maskBitmap))
     }
@@ -172,10 +188,14 @@ fun EditorScreen(
     }
     var canUndo by remember { mutableStateOf(false) }
     var canRedo by remember { mutableStateOf(false) }
+    var undoPressCount by remember { mutableIntStateOf(0) }
 
     fun refreshUndoState() {
         canUndo = undoRedoManager.canUndo
         canRedo = undoRedoManager.canRedo
+        undoPressCount = undoRedoManager.undoPressCount
+        // Mark edits as present whenever a new state is pushed onto the undo stack.
+        if (undoRedoManager.undoStackSize > 0) hasUnsavedEdits = true
     }
 
     fun updateCutout() {
@@ -222,14 +242,27 @@ fun EditorScreen(
             try {
                 val primary = modelManager.getActiveEngine()
                 val newMask = try {
-                    primary.segment(originalBitmap)
+                    withContext(Dispatchers.Default) { primary.segment(originalBitmap) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
+                    // Primary engine failed — try the built-in fallback before giving up.
                     val fallback = modelManager.getFallbackEngine()
                     if (primary === fallback) throw e
-                    Toast.makeText(context, "AI model failed (${e.message}). Using built-in engine.", Toast.LENGTH_LONG).show()
-                    fallback.segment(originalBitmap)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            "AI model failed, switching to built-in engine…",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    try {
+                        withContext(Dispatchers.Default) { fallback.segment(originalBitmap) }
+                    } catch (e2: CancellationException) {
+                        throw e2
+                    } catch (e2: Throwable) {
+                        throw e2
+                    }
                 }
                 undoRedoManager.pushState(maskBitmap)
                 maskBitmap = newMask
@@ -237,7 +270,13 @@ fun EditorScreen(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                Toast.makeText(context, "Segmentation failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        "Auto cutout failed: ${e.message ?: "Unknown error"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             } finally {
                 isProcessing = false
                 refreshUndoState()
@@ -273,11 +312,14 @@ fun EditorScreen(
             val savedMask = ImageUtils.loadBitmapFromFile(existingProject.maskImagePath)
             if (savedMask != null) {
                 // Guard against a mask whose size no longer matches the original.
-                maskBitmap = if (savedMask.width == originalBitmap.width && savedMask.height == originalBitmap.height) {
+                val correctedMask = if (savedMask.width == originalBitmap.width && savedMask.height == originalBitmap.height) {
                     savedMask
                 } else {
                     ImageUtils.scaleToNewBitmap(savedMask, originalBitmap.width, originalBitmap.height)
                 }
+                maskBitmap = correctedMask
+                // Snapshot the saved mask so Back restores it rather than a blank mask.
+                initialMaskSnapshot = MaskEditor.copyBitmap(correctedMask)
             }
             // The background photo was never restored before (bgImagePath was always saved as null).
             existingProject.bgImagePath?.let { path ->
@@ -390,7 +432,16 @@ fun EditorScreen(
     }
 
     BackHandler {
-        saveProjectAndExit()
+        if (hasUnsavedEdits) {
+            undoRedoManager.pushState(maskBitmap)
+            maskBitmap = MaskEditor.copyBitmap(initialMaskSnapshot)
+            updateCutout()
+            refreshUndoState()
+            hasUnsavedEdits = false
+            Toast.makeText(context, "Restored to original. Press back again to exit.", Toast.LENGTH_SHORT).show()
+        } else {
+            saveProjectAndExit()
+        }
     }
 
     Scaffold(
@@ -404,7 +455,19 @@ fun EditorScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = { saveProjectAndExit() }) {
+                    IconButton(onClick = {
+                        if (hasUnsavedEdits) {
+                            // First back press: restore the mask to the original (pre-edit) state.
+                            undoRedoManager.pushState(maskBitmap)
+                            maskBitmap = MaskEditor.copyBitmap(initialMaskSnapshot)
+                            updateCutout()
+                            refreshUndoState()
+                            hasUnsavedEdits = false
+                            Toast.makeText(context, "Restored to original. Press back again to exit.", Toast.LENGTH_SHORT).show()
+                        } else {
+                            saveProjectAndExit()
+                        }
+                    }) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = stringResource(R.string.cancel)
@@ -412,24 +475,40 @@ fun EditorScreen(
                     }
                 },
                 actions = {
-                    // Undo
-                    IconButton(
-                        onClick = {
-                            val prev = undoRedoManager.undo(maskBitmap)
-                            if (prev != null) {
-                                maskBitmap = prev
-                                updateCutout()
-                                refreshUndoState()
+                    // Undo (with press-count badge)
+                    BadgedBox(
+                        badge = {
+                            if (undoPressCount > 0) {
+                                Badge(
+                                    containerColor = ElectricBlue,
+                                    contentColor = Color.White
+                                ) {
+                                    Text(
+                                        text = undoPressCount.toString(),
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
                             }
-                        },
-                        enabled = canUndo,
-                        modifier = Modifier.testTag("undo_button")
+                        }
                     ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Undo,
-                            contentDescription = stringResource(R.string.undo),
-                            tint = if (canUndo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                        )
+                        IconButton(
+                            onClick = {
+                                val prev = undoRedoManager.undo(maskBitmap)
+                                if (prev != null) {
+                                    maskBitmap = prev
+                                    updateCutout()
+                                    refreshUndoState()
+                                }
+                            },
+                            enabled = canUndo,
+                            modifier = Modifier.testTag("undo_button")
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Undo,
+                                contentDescription = stringResource(R.string.undo),
+                                tint = if (canUndo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            )
+                        }
                     }
 
                     // Redo
