@@ -27,7 +27,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
@@ -51,6 +54,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import kotlinx.coroutines.delay
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -186,7 +190,8 @@ fun BgSwatch(mode: Int, label: String, onClick: () -> Unit) {
         ) {
             when (mode) {
                 0 -> CheckerboardBackground(squareSize = 5.dp)
-                1 -> Box(Modifier.fillMaxSize().background(Color.White))
+                1 -> CheckerboardBackground(squareSize = 5.dp, lightColor = Color.White, darkColor = Color(0xFFD9D9D9))
+                2 -> Box(Modifier.fillMaxSize().background(Color.White))
                 else -> Box(Modifier.fillMaxSize().background(Color.Black))
             }
         }
@@ -286,4 +291,40 @@ fun BrushIcon(tint: Color, iconSize: Dp = 22.dp) {
             drawCircle(tint, radius = 4.6f, center = Offset(8f, 16.2f))
         }
     }
+}
+
+/** Person silhouette (AI-Auto tool). */
+@Composable
+fun PersonIcon(tint: Color, iconSize: Dp = 22.dp) {
+    val body = remember {
+        Path().apply {
+            moveTo(4f, 21f)
+            lineTo(4f, 19f)
+            cubicTo(4f, 15f, 8f, 14f, 12f, 14f)
+            cubicTo(16f, 14f, 20f, 15f, 20f, 19f)
+            lineTo(20f, 21f)
+            close()
+        }
+    }
+    Canvas(Modifier.size(iconSize)) {
+        scale(size.width / 24f, pivot = Offset.Zero) {
+            drawCircle(tint, radius = 4.4f, center = Offset(12f, 7.6f))
+            drawPath(body, tint)
+        }
+    }
+}
+
+/** True only after [flag] has been true for [delayMs]: keeps a busy overlay from flashing on fast actions. */
+@Composable
+fun rememberDelayedFlag(flag: Boolean, delayMs: Long = 400L): Boolean {
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(flag) {
+        if (flag) {
+            delay(delayMs)
+            shown = true
+        } else {
+            shown = false
+        }
+    }
+    return shown
 }
