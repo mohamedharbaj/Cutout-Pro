@@ -278,7 +278,8 @@ object ImageUtils {
     suspend fun createShareIntent(
         context: Context,
         bitmap: Bitmap,
-        isPng: Boolean
+        isPng: Boolean,
+        targetPackage: String? = null
     ): Result<Intent> = withContext(Dispatchers.IO) {
         runCatching {
             val cacheDir = File(context.cacheDir, "exports").apply { mkdirs() }
@@ -307,7 +308,13 @@ object ImageUtils {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
 
-            Intent.createChooser(shareIntent, "Share Cutout")
+            if (targetPackage != null) {
+                // Direct share to one app (e.g. WhatsApp); the caller falls back to the chooser if it is missing.
+                shareIntent.setPackage(targetPackage)
+                shareIntent
+            } else {
+                Intent.createChooser(shareIntent, "Share Cutout")
+            }
         }
     }
 
