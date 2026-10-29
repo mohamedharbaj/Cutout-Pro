@@ -37,11 +37,12 @@ fun CutoutLayers(
     Box(modifier) {
         when (bgMode) {
             0 -> CheckerboardBackground()
-            1 -> Box(Modifier.fillMaxSize().background(Color.White))
+            1 -> CheckerboardBackground(lightColor = Color.White, darkColor = Color(0xFFD9D9D9))
+            2 -> Box(Modifier.fillMaxSize().background(Color.White))
             else -> Box(Modifier.fillMaxSize().background(Color.Black))
         }
         Canvas(Modifier.fillMaxSize()) {
-            if (version < 0) return@Canvas
+            if (version < 0 || !xf.valid) return@Canvas
             drawIntoCanvas { c ->
                 val nc = c.nativeCanvas
                 val d = xf.dst()
