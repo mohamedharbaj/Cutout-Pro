@@ -112,6 +112,8 @@ dependencies {
   implementation(libs.androidx.core.ktx)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
+  // Free on-device AI subject segmentation (runs via Google Play services: tiny APK impact).
+  implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
 
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
