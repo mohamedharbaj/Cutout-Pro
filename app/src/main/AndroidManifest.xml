@@ -16,6 +16,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.CutoutPro">
 
+        <!-- Lets Google Play services download the free AI (ML Kit) model right after install. -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="subject_segment" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
