@@ -35,6 +35,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
+import com.example.ui.components.BgSwatch
+import com.example.ui.components.EditorTopBar
 import com.example.R
 import com.example.engine.MaskEditor
 
@@ -51,10 +55,11 @@ fun SmoothScreen(
     var version by remember { mutableIntStateOf(0) }
     var working by remember { mutableStateOf(false) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var bgMode by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(level) {
         working = true
-        preview = if (level == 0) mask else MaskEditor.smoothEdges(mask, level * 2)
+        preview = if (level == 0) mask else MaskEditor.smoothEdges(mask, level)
         version++
         working = false
     }
@@ -67,21 +72,16 @@ fun SmoothScreen(
             .background(MaterialTheme.colorScheme.background)
             .safeDrawingPadding()
     ) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
-            }
-            Text(stringResource(R.string.smooth_title), style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { onSave(preview) }, enabled = !working) {
-                Icon(Icons.Filled.Check, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.save))
-            }
-        }
+        EditorTopBar(
+            onBack = onBack,
+            title = stringResource(R.string.smooth_title),
+            actionLabel = stringResource(R.string.save),
+            actionEnabled = !working,
+            onAction = { onSave(preview) }
+        )
 
         CutoutLayers(
-            original, preview, version, 0, xf,
+            original, preview, version, bgMode, xf,
             Modifier.weight(1f).fillMaxWidth().onSizeChanged { canvasSize = it }
         )
 
@@ -91,10 +91,12 @@ fun SmoothScreen(
                 .background(MaterialTheme.colorScheme.surface),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            BgSwatch(bgMode, stringResource(R.string.bg)) { bgMode = (bgMode + 1) % 3 }
             Text(
                 stringResource(R.string.smooth),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(horizontal = 16.dp)
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 8.dp)
             )
             for (lv in 0..5) {
                 val selected = lv == level
@@ -103,12 +105,13 @@ fun SmoothScreen(
                         .weight(1f)
                         .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
                         .clickable { level = lv }
-                        .padding(vertical = 18.dp),
+                        .padding(vertical = 14.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         lv.toString(),
-                        style = MaterialTheme.typography.titleMedium,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center,
                         color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
                         else MaterialTheme.colorScheme.onSurface
