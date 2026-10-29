@@ -180,68 +180,69 @@ object MaskEditor {
     }
 
     /**
-     * SMOOTH EDGE:
-     * Softens and feathers the mask alpha boundaries using a separable blur pass.
+     * SMOOTH EDGE (level 1..5):
+     * 1) blurs the mask alpha (two box passes ~ gaussian) to round off jagged / staircase edges,
+     * 2) re-sharpens with a steep curve around a threshold, so the edge stays where it was and only
+     *    gets a ~2px anti-aliased transition. There is no wide glow/halo (the old version just
+     *    blurred the alpha, which made background-coloured pixels show up as a white halo).
+     * Higher levels smooth more and also trim a tiny fringe from the border.
      */
-    suspend fun smoothEdges(mask: Bitmap, radius: Int): Bitmap = withContext(Dispatchers.Default) {
-        if (radius <= 0) return@withContext mask
+    suspend fun smoothEdges(mask: Bitmap, level: Int): Bitmap = withContext(Dispatchers.Default) {
+        if (level <= 0) return@withContext mask
 
         val width = mask.width
         val height = mask.height
-        val pixels = IntArray(width * height)
+        val n = width * height
+        val pixels = IntArray(n)
         mask.getPixels(pixels, 0, width, 0, 0, width, height)
 
-        val alphas = IntArray(width * height)
-        for (i in pixels.indices) {
-            alphas[i] = (pixels[i] shr 24) and 0xFF
+        var cur = IntArray(n) { (pixels[it] shr 24) and 0xFF }
+        var tmp = IntArray(n)
+
+        // Radius grows with the level and a little with the image size, but stays small.
+        val base = max(1f, max(width, height) / 1200f)
+        val rad = max(1, (level * 0.9f * base).toInt()).coerceAtMost(12)
+
+        repeat(2) {
+            boxBlurH(cur, tmp, width, height, rad)
+            boxBlurV(tmp, cur, width, height, rad)
         }
 
-        val temp = IntArray(width * height)
-        val rad = radius.coerceIn(1, 15)
-
-        // Horizontal blur pass on alphas
-        for (y in 0 until height) {
-            val rowOffset = y * width
-            var windowSum = 0
-            val windowSize = 2 * rad + 1
-
-            for (i in -rad..rad) {
-                val clampedX = i.coerceIn(0, width - 1)
-                windowSum += alphas[rowOffset + clampedX]
-            }
-
-            for (x in 0 until width) {
-                temp[rowOffset + x] = windowSum / windowSize
-
-                val leftX = (x - rad).coerceIn(0, width - 1)
-                val rightX = (x + rad + 1).coerceIn(0, width - 1)
-                windowSum += alphas[rowOffset + rightX] - alphas[rowOffset + leftX]
-            }
-        }
-
-        // Vertical blur pass on alphas
-        for (x in 0 until width) {
-            var windowSum = 0
-            val windowSize = 2 * rad + 1
-
-            for (i in -rad..rad) {
-                val clampedY = i.coerceIn(0, height - 1)
-                windowSum += temp[clampedY * width + x]
-            }
-
-            for (y in 0 until height) {
-                val smoothedAlpha = (windowSum / windowSize).coerceIn(0, 255)
-                pixels[y * width + x] = Color.argb(smoothedAlpha, 255, 255, 255)
-
-                val topY = (y - rad).coerceIn(0, height - 1)
-                val botY = (y + rad + 1).coerceIn(0, height - 1)
-                windowSum += temp[botY * width + x] - temp[topY * width + x]
-            }
+        val threshold = 0.5f + 0.02f * level
+        val gain = max(2.5f, rad * 1.6f)
+        for (i in 0 until n) {
+            val v = ((cur[i] / 255f - threshold) * gain + 0.5f).coerceIn(0f, 1f)
+            pixels[i] = Color.argb((v * 255f + 0.5f).toInt(), 255, 255, 255)
         }
 
         val resultMask = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         resultMask.setPixels(pixels, 0, width, 0, 0, width, height)
         resultMask
+    }
+
+    private fun boxBlurH(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
+        val size = 2 * r + 1
+        for (y in 0 until h) {
+            val row = y * w
+            var sum = 0
+            for (i in -r..r) sum += src[row + i.coerceIn(0, w - 1)]
+            for (x in 0 until w) {
+                dst[row + x] = sum / size
+                sum += src[row + (x + r + 1).coerceIn(0, w - 1)] - src[row + (x - r).coerceIn(0, w - 1)]
+            }
+        }
+    }
+
+    private fun boxBlurV(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
+        val size = 2 * r + 1
+        for (x in 0 until w) {
+            var sum = 0
+            for (i in -r..r) sum += src[i.coerceIn(0, h - 1) * w + x]
+            for (y in 0 until h) {
+                dst[y * w + x] = sum / size
+                sum += src[(y + r + 1).coerceIn(0, h - 1) * w + x] - src[(y - r).coerceIn(0, h - 1) * w + x]
+            }
+        }
     }
 
     /**
