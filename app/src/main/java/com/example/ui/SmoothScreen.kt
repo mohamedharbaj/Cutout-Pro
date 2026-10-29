@@ -91,7 +91,7 @@ fun SmoothScreen(
                 .background(MaterialTheme.colorScheme.surface),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            BgSwatch(bgMode, stringResource(R.string.bg)) { bgMode = (bgMode + 1) % 3 }
+            BgSwatch(bgMode, stringResource(R.string.bg)) { bgMode = (bgMode + 1) % 4 }
             Text(
                 stringResource(R.string.smooth),
                 fontSize = 13.sp,
