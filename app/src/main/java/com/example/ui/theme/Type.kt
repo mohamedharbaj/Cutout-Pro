@@ -6,31 +6,23 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-// Set of Material typography styles to start with
-val Typography =
-  Typography(
-    bodyLarge =
-      TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 16.sp,
-        lineHeight = 24.sp,
-        letterSpacing = 0.5.sp,
-      )
-    /* Other default text styles to override
-    titleLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 22.sp,
-        lineHeight = 28.sp,
-        letterSpacing = 0.sp
-    ),
-    labelSmall = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 11.sp,
-        lineHeight = 16.sp,
-        letterSpacing = 0.5.sp
-    )
-    */
-  )
+// Compact type scale so the app does not feel oversized on a phone screen.
+private fun style(size: Int, weight: FontWeight = FontWeight.Normal, spacing: Double = 0.0) = TextStyle(
+    fontFamily = FontFamily.Default,
+    fontWeight = weight,
+    fontSize = size.sp,
+    lineHeight = (size + 6).sp,
+    letterSpacing = spacing.sp
+)
+
+val Typography = Typography(
+    headlineLarge = style(24, FontWeight.Bold),
+    titleLarge = style(18),
+    titleMedium = style(14, FontWeight.Medium),
+    bodyLarge = style(14),
+    bodyMedium = style(13),
+    bodySmall = style(11),
+    labelLarge = style(13, FontWeight.Medium),
+    labelMedium = style(11, FontWeight.Medium),
+    labelSmall = style(10, FontWeight.Medium)
+)
