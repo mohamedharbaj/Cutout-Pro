@@ -142,7 +142,8 @@ fun EraseScreen(
     var redoCount by remember { mutableIntStateOf(undo.redoCount) }
     var busyMessage by remember { mutableStateOf<String?>(null) }
     var pending by remember { mutableStateOf<PendingOp?>(null) }
-    var pendingApplied by remember { mutableStateOf(false) }
+    // live (not yet recorded) result of the last Magic / Auto-Color tap, shown instead of the mask
+    var preview by remember { mutableStateOf<Bitmap?>(null) }
     val workerHolder = remember { arrayOfNulls<Job>(1) }
     val wanted = remember { floatArrayOf(30f) }
 
@@ -153,18 +154,12 @@ fun EraseScreen(
     // Gesture lambdas outlive a single composition, so they must read the latest transform.
     val xfNow by rememberUpdatedState(xf)
 
-    // switching tool ends the live slider preview of the last Magic / Auto-Color tap
-    LaunchedEffect(tool) {
-        pending = null
-        pendingApplied = false
-    }
-
-    /** True while a tool operation or a live slider preview is still running. */
+    /** True while a tool operation, a live slider preview or a settle step is running. */
     fun blocked(): Boolean = busy || workerHolder[0]?.isActive == true
 
     fun refreshUndo() {
-        undoCount = undo.undoCount
-        redoCount = undo.redoCount
+        undoCount = undo.undoCount + if (preview != null) 1 else 0
+        redoCount = if (preview != null) 0 else undo.redoCount
     }
 
     /** Replaces the mask with [newMask] and records the change as ONE undo step (done off the UI thread). */
@@ -179,41 +174,73 @@ fun EraseScreen(
         refreshUndo()
     }
 
-    fun doUndo() {
-        if (blocked()) return
+    /** Turns the live preview of the last Magic / Auto-Color tap into one real undo step (no visual change). */
+    suspend fun settlePending() {
+        val pv = preview
+        pending = null
+        if (pv != null) {
+            commit(pv)
+            preview = null
+        }
+        refreshUndo()
+    }
+
+    /** Settles the live preview (if any) and then runs [then]; always goes through the worker so nothing overlaps. */
+    fun settleThen(then: (() -> Unit)? = null) {
+        val prev = workerHolder[0]
+        workerHolder[0] = scope.launch {
+            prev?.join()
+            try {
+                settlePending()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                context.toast(context.getString(R.string.error_process))
+            }
+            then?.invoke()
+        }
+    }
+
+    fun hasLivePreview(): Boolean = pending != null || preview != null
+
+    fun performUndo() {
         if (undo.undo(mask)) {
-            pending = null
-            pendingApplied = false
             version++
             refreshUndo()
         }
     }
 
-    fun doRedo() {
-        if (blocked()) return
+    fun performRedo() {
         if (undo.redo(mask)) {
-            pending = null
-            pendingApplied = false
             version++
             refreshUndo()
         }
+    }
+
+    fun performUndoAll() {
+        if (undo.undoAll(mask) > 0) {
+            version++
+            refreshUndo()
+        }
+    }
+
+    fun doUndo() {
+        if (blocked()) return
+        if (hasLivePreview()) settleThen { performUndo() } else performUndo()
+    }
+
+    fun doRedo() {
+        if (blocked()) return
+        if (hasLivePreview()) settleThen { performRedo() } else performRedo()
     }
 
     /** Long-press on Undo: back to the original picture, before any background removal. */
     fun doUndoAll() {
         if (blocked()) return
-        if (undo.undoAll(mask) > 0) {
-            pending = null
-            pendingApplied = false
-            version++
-            refreshUndo()
-        }
+        if (hasLivePreview()) settleThen { performUndoAll() } else performUndoAll()
     }
 
-    fun runAuto() {
-        if (blocked()) return
-        pending = null
-        pendingApplied = false
+    fun runAutoNow() {
         scope.launch {
             busy = true
             busyMessage = null
@@ -238,45 +265,53 @@ fun EraseScreen(
         }
     }
 
-    // Colour / Magic: the crosshair sits above the finger (Cursor Offset), so the finger never hides
-    // the exact pixel. The colour is picked and removed where the crosshair is when the finger lifts.
+    fun runAuto() {
+        if (blocked()) return
+        if (hasLivePreview()) settleThen { runAutoNow() } else runAutoNow()
+    }
+
     /**
-     * Applies (or re-applies) the pending Magic / Auto-Color tap with the wanted tolerance. Every call first
-     * reverts the previous result of this same tap, so the whole slider drag is ONE undo step:
-     * tolerance 0 = picture exactly as before the tap, tolerance 100 = full effect.
+     * Live strength of the last Magic / Auto-Color tap: every slider value recomputes the result from the
+     * untouched mask and swaps the preview in one go (no revert in between, so no flicker).
+     * Tolerance 0 = picture as before the tap, 100 = full effect. It becomes ONE undo step when settled.
      */
+    suspend fun pendingLoop() {
+        var done = -1f
+        while (wanted[0] != done) {
+            val t = wanted[0]
+            done = t
+            val op = pending ?: break
+            val base = mask
+            val result = if (t >= 0.5f) {
+                if (op.isColor) {
+                    MaskEditor.removeByColor(original, base, op.color, t)
+                } else {
+                    MaskEditor.magicWandFloodFill(original, base, op.bx, op.by, t)
+                }
+            } else null
+            preview = result
+            version++
+            refreshUndo()
+        }
+    }
+
     fun requestPending(tol: Float) {
         wanted[0] = tol
         if (workerHolder[0]?.isActive == true) return
         workerHolder[0] = scope.launch {
             try {
-                var done = -1f
-                while (wanted[0] != done) {
-                    val t = wanted[0]
-                    done = t
-                    val op = pending ?: break
-                    if (pendingApplied) {
-                        withContext(Dispatchers.Default) { undo.undo(mask) }
-                        pendingApplied = false
-                        version++
-                        refreshUndo()
-                    }
-                    if (t >= 0.5f) {
-                        val result = if (op.isColor) {
-                            MaskEditor.removeByColor(original, mask, op.color, t)
-                        } else {
-                            MaskEditor.magicWandFloodFill(original, mask, op.bx, op.by, t)
-                        }
-                        commit(result)
-                        pendingApplied = true
-                    }
-                }
+                pendingLoop()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 context.toast(context.getString(R.string.error_process))
             }
         }
+    }
+
+    // switching tool settles the live preview of the last Magic / Auto-Color tap
+    LaunchedEffect(tool) {
+        if (hasLivePreview()) settleThen()
     }
 
     // Colour / Magic: the crosshair sits above the finger (Cursor Offset), so the finger never hides
@@ -288,9 +323,31 @@ fun EraseScreen(
         val bx = x.toBmpX(p.x).toInt()
         val by = x.toBmpY(p.y).toInt()
         if (bx !in 0 until original.width || by !in 0 until original.height) return
-        pending = PendingOp(tool == EraseTool.COLOR, bx, by, MaskEditor.pickColor(original, bx, by))
-        pendingApplied = false
-        requestPending(tolerance)
+        val op = PendingOp(tool == EraseTool.COLOR, bx, by, MaskEditor.pickColor(original, bx, by))
+        workerHolder[0] = scope.launch {
+            try {
+                settlePending()          // the previous tap becomes its own undo step
+                pending = op
+                wanted[0] = tolerance
+                pendingLoop()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                context.toast(context.getString(R.string.error_process))
+            }
+        }
+    }
+
+    /** Cursor Offset slider: the crosshair follows it live, even before the screen is touched. */
+    fun setOffset(v: Float) {
+        val old = offsetDp
+        offsetDp = v
+        val c = cursor
+        cursor = if (c != null) {
+            Offset(c.x, c.y - (v - old) * density)
+        } else {
+            Offset(canvasSize.width / 2f, canvasSize.height / 2f)
+        }
     }
 
     fun beginStroke() {
@@ -301,8 +358,6 @@ fun EraseScreen(
         val before = stroke.before ?: return
         stroke.before = null
         undo.record(before, mask)
-        pending = null
-        pendingApplied = false
         refreshUndo()
     }
 
@@ -336,7 +391,11 @@ fun EraseScreen(
             EditorTopBar(
                 onBack = onBack,
                 actionLabel = stringResource(R.string.done),
-                onAction = { if (!blocked()) onDone(mask) }
+                onAction = {
+                    if (!blocked()) {
+                        if (hasLivePreview()) settleThen { onDone(mask) } else onDone(mask)
+                    }
+                }
             )
 
             // Canvas
@@ -419,7 +478,7 @@ fun EraseScreen(
                         }
                     }
             ) {
-                CutoutLayers(original, mask, version, bgMode, xf, Modifier.fillMaxSize())
+                CutoutLayers(original, preview ?: mask, version, bgMode, xf, Modifier.fillMaxSize())
                 val ring = cursor
                 if (ring != null && tool != EraseTool.ZOOM && tool != EraseTool.AUTO) {
                     val isBrush = tool == EraseTool.MANUAL || tool == EraseTool.REPAIR
@@ -451,14 +510,14 @@ fun EraseScreen(
                     when (tool) {
                         EraseTool.MANUAL, EraseTool.REPAIR -> {
                             LabeledSlider(stringResource(R.string.brush_size), brushDp, 8f..80f) { brushDp = it }
-                            LabeledSlider(stringResource(R.string.cursor_offset), offsetDp, 0f..120f) { offsetDp = it }
+                            LabeledSlider(stringResource(R.string.cursor_offset), offsetDp, 0f..120f) { setOffset(it) }
                         }
                         EraseTool.COLOR, EraseTool.MAGIC -> {
                             LabeledSlider(stringResource(R.string.tolerance), tolerance, 0f..100f) {
                                 tolerance = it
                                 if (pending != null) requestPending(it)
                             }
-                            LabeledSlider(stringResource(R.string.cursor_offset), offsetDp, 0f..120f) { offsetDp = it }
+                            LabeledSlider(stringResource(R.string.cursor_offset), offsetDp, 0f..120f) { setOffset(it) }
                         }
                         else -> Unit
                     }
