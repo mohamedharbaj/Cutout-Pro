@@ -45,4 +45,5 @@
     <string name="bg_photo">Photo</string>
     <string name="save_with_bg">Save with this background (JPEG)</string>
     <string name="jpeg_saved_to">JPEG saved to Pictures/CutoutPro ✓</string>
+    <string name="ai_strength">AI strength</string>
 </resources>
