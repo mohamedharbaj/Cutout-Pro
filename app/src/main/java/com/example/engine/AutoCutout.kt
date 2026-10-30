@@ -53,6 +53,29 @@ object AutoCutout {
         return Outcome(cleaned, usedFallback = true, reason = reason)
     }
 
+    /**
+     * Applies the AI cut with a strength: 0 = [base] unchanged, 1 = full cut (base x ai), in between the
+     * background fades out gradually. Always starts from the untouched [base], so it can be re-run live.
+     */
+    fun blend(base: Bitmap, ai: Bitmap, strength: Float): Bitmap {
+        val w = base.width
+        val h = base.height
+        val n = w * h
+        val b = IntArray(n)
+        val a = IntArray(n)
+        base.getPixels(b, 0, w, 0, 0, w, h)
+        ai.getPixels(a, 0, w, 0, 0, w, h)
+        for (i in 0 until n) {
+            val ba = b[i] ushr 24
+            val aa = a[i] ushr 24
+            val na = (ba * (1f - strength * (1f - aa / 255f)) + 0.5f).toInt().coerceIn(0, 255)
+            b[i] = (na shl 24) or 0x00FFFFFF
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(b, 0, w, 0, 0, w, h)
+        return out
+    }
+
     private fun softwareCopy(src: Bitmap): Bitmap =
         if (src.config == Bitmap.Config.ARGB_8888) src
         else src.copy(Bitmap.Config.ARGB_8888, false) ?: src
