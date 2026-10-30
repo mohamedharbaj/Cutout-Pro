@@ -51,8 +51,27 @@ class GrabCutLiteSegmenter : SegmentationEngine {
         val center = BooleanArray(n)
         for (y in (h * 0.25f).toInt() until (h * 0.75f).toInt())
             for (x in (w * 0.25f).toInt() until (w * 0.75f).toInt()) center[y * w + x] = true
-        var bgSel = border.copyOf()
+        // Background seed = only the border colours that also appear along the TOP edge: the subject almost
+        // never touches it, while the bottom / lower sides often hold shoulders, clothes, a table...
+        val hardBg = border.copyOf()
+        fit(data, border, 4)?.let { gm ->
+            val share = IntArray(gm.mu.size)
+            var topCount = 0
+            for (y in 0 until band) for (x in 0 until w) {
+                val i = y * w + x
+                share[nearest(gm.mu, data[i * 3], data[i * 3 + 1], data[i * 3 + 2])]++
+                topCount++
+            }
+            val keep = BooleanArray(gm.mu.size) { topCount > 0 && share[it] >= 0.10f * topCount }
+            if (keep.none { it }) keep[share.indices.maxByOrNull { share[it] } ?: 0] = true
+            for (i in 0 until n) {
+                if (border[i]) hardBg[i] = keep[nearest(gm.mu, data[i * 3], data[i * 3 + 1], data[i * 3 + 2])]
+            }
+        }
+        var bgSel = hardBg.copyOf()
         var fgSel = center.copyOf()
+        val bgc = BooleanArray(n)
+        val queue = IntArray(n)
 
         // Contrast-sensitive neighbour weights
         val wx = FloatArray(n)
@@ -82,7 +101,7 @@ class GrabCutLiteSegmenter : SegmentationEngine {
             for (i in 0 until n) {
                 val l = logp(f, data[i * 3], data[i * 3 + 1], data[i * 3 + 2]) -
                     logp(b, data[i * 3], data[i * 3 + 1], data[i * 3 + 2])
-                unary[i] = l.coerceIn(-12f, 12f)
+                unary[i] = l.coerceIn(-12f, 12f) + FG_BIAS
                 q[i] = sigmoid(unary[i])
             }
             for (it in 0 until 14) {
@@ -92,13 +111,29 @@ class GrabCutLiteSegmenter : SegmentationEngine {
                     if (x < w - 1) { val t = wx[i]; msg[i] += t * s[i + 1]; msg[i + 1] += t * s[i] }
                     if (y < h - 1) { val t = wy[i]; msg[i] += t * s[i + w]; msg[i + w] += t * s[i] }
                 }
-                for (i in 0 until n) q[i] = if (border[i]) 0f else sigmoid(0.6f * unary[i] + 2.2f * msg[i])
+                for (i in 0 until n) q[i] = if (hardBg[i]) 0f else sigmoid(0.6f * unary[i] + 2.2f * msg[i])
+            }
+            // The background must be connected to the picture border: anything enclosed by the subject
+            // (face, eyebrows, collar, tie...) is subject, even if its colour looks like the background.
+            java.util.Arrays.fill(bgc, false)
+            var qh = 0
+            var qt = 0
+            for (i in 0 until n) if (border[i] && q[i] < 0.5f) { bgc[i] = true; queue[qt++] = i }
+            while (qh < qt) {
+                val c = queue[qh++]
+                val x = c % w
+                val y = c / w
+                if (x > 0 && !bgc[c - 1] && q[c - 1] < 0.5f) { bgc[c - 1] = true; queue[qt++] = c - 1 }
+                if (x < w - 1 && !bgc[c + 1] && q[c + 1] < 0.5f) { bgc[c + 1] = true; queue[qt++] = c + 1 }
+                if (y > 0 && !bgc[c - w] && q[c - w] < 0.5f) { bgc[c - w] = true; queue[qt++] = c - w }
+                if (y < h - 1 && !bgc[c + w] && q[c + w] < 0.5f) { bgc[c + w] = true; queue[qt++] = c + w }
             }
             var fgCount = 0
             for (i in 0 until n) {
-                val fg = q[i] > 0.5f && !border[i]
+                if (!bgc[i]) q[i] = 1f
+                val fg = !bgc[i] && !border[i]
                 fgSel[i] = fg
-                bgSel[i] = !fg
+                bgSel[i] = bgc[i] || hardBg[i]
                 if (fg) fgCount++
             }
             if (fgCount < 50) fgSel = center.copyOf()
@@ -154,7 +189,7 @@ class GrabCutLiteSegmenter : SegmentationEngine {
     private fun sigmoid(v: Float): Float = 1f / (1f + exp(-v))
 
     /** Gaussian mixture (K diagonal components) initialised by farthest-point k-means on a sample. */
-    private fun fit(data: FloatArray, sel: BooleanArray): Gmm? {
+    private fun fit(data: FloatArray, sel: BooleanArray, components: Int = COMPONENTS): Gmm? {
         var total = 0
         for (v in sel) if (v) total++
         if (total < 24) return null
@@ -174,7 +209,7 @@ class GrabCutLiteSegmenter : SegmentationEngine {
             seen++
         }
         val m = k
-        val kc = min(COMPONENTS, max(1, m / 8))
+        val kc = min(components, max(1, m / 8))
         val mu = Array(kc) { FloatArray(3) }
         // farthest-point init
         for (c in 0..2) mu[0][c] = pts[(m / 2) * 3 + c]
@@ -258,5 +293,6 @@ class GrabCutLiteSegmenter : SegmentationEngine {
         const val ROUNDS = 5
         const val COMPONENTS = 5
         const val SAMPLE = 6000
+        const val FG_BIAS = 0.8f
     }
 }
