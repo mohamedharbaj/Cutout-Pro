@@ -37,4 +37,12 @@
     <string name="error_open">Couldn\'t open this image</string>
     <string name="error_save">Couldn\'t save the image</string>
     <string name="error_process">Something went wrong. Please try again.</string>
+    <string name="ai_downloading">Downloading the AI model (first time only). Keep the internet on…</string>
+    <string name="ai_fallback">AI model not available, built-in mode used. Refine with Manual / Repair.</string>
+    <string name="whatsapp">WhatsApp</string>
+    <string name="change_bg">Change background</string>
+    <string name="change_bg_hint">Pick a color or a photo as the new background</string>
+    <string name="bg_photo">Photo</string>
+    <string name="save_with_bg">Save with this background (JPEG)</string>
+    <string name="jpeg_saved_to">JPEG saved to Pictures/CutoutPro ✓</string>
 </resources>
