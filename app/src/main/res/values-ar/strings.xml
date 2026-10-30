@@ -45,4 +45,5 @@
     <string name="bg_photo">صورة</string>
     <string name="save_with_bg">حفظ بهذه الخلفية (JPEG)</string>
     <string name="jpeg_saved_to">تم حفظ JPEG في Pictures/CutoutPro ✓</string>
+    <string name="ai_strength">قوة تأثير AI</string>
 </resources>
