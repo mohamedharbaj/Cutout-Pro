@@ -37,4 +37,12 @@
     <string name="error_open">تعذر فتح هذه الصورة</string>
     <string name="error_save">تعذر حفظ الصورة</string>
     <string name="error_process">حدث خطأ. حاول مرة أخرى.</string>
+    <string name="ai_downloading">جارٍ تحميل نموذج الذكاء الاصطناعي (مرة واحدة فقط). أبقِ الإنترنت مفعّلًا…</string>
+    <string name="ai_fallback">نموذج الذكاء الاصطناعي غير متاح، تم استخدام الوضع المدمج. حسّن النتيجة بالأدوات اليدوية.</string>
+    <string name="whatsapp">واتساب</string>
+    <string name="change_bg">تغيير الخلفية</string>
+    <string name="change_bg_hint">اختر لونًا أو صورة كخلفية جديدة</string>
+    <string name="bg_photo">صورة</string>
+    <string name="save_with_bg">حفظ بهذه الخلفية (JPEG)</string>
+    <string name="jpeg_saved_to">تم حفظ JPEG في Pictures/CutoutPro ✓</string>
 </resources>
