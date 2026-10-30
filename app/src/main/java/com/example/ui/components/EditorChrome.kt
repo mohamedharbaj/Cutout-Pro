@@ -1,6 +1,8 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -199,20 +201,35 @@ fun BgSwatch(mode: Int, label: String, onClick: () -> Unit) {
     }
 }
 
-/** Undo / Redo icon button with an arrow symbol (and an optional small label). */
+/**
+ * Undo / Redo icon button. [count] = number of edits that can still be undone / redone (shown next to the
+ * label); long-press runs [onLongClick] (Undo: go all the way back to the original picture).
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun UndoRedoButton(redo: Boolean, label: String, enabled: Boolean, onClick: () -> Unit) {
+fun UndoRedoButton(
+    redo: Boolean,
+    label: String,
+    enabled: Boolean,
+    count: Int = 0,
+    onLongClick: (() -> Unit)? = null,
+    onClick: () -> Unit
+) {
     val tint = if (enabled) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
     Column(
         Modifier
             .clip(RoundedCornerShape(5.dp))
-            .clickable(enabled = enabled, onClick = onClick)
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .padding(horizontal = 10.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         UndoIcon(mirror = redo, tint = tint, iconSize = 22.dp)
-        Text(label, fontSize = 10.sp, color = tint, maxLines = 1)
+        Text(if (count > 0) "$label ($count)" else label, fontSize = 10.sp, color = tint, maxLines = 1)
     }
 }
 
