@@ -110,6 +110,15 @@ class UndoRedoManager(
         return true
     }
 
+    /** Reverts the last edit AND forgets it (used when a stroke turns out to be a pinch gesture). */
+    @Synchronized
+    fun cancelLast(mask: Bitmap): Boolean {
+        val e = undoStack.pollLast() ?: return false
+        apply(mask, e, e.before)
+        totalBytes -= e.bytes
+        return true
+    }
+
     /** Re-applies the last undone edit directly inside [mask]. */
     @Synchronized
     fun redo(mask: Bitmap): Boolean {
