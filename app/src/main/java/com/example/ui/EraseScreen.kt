@@ -242,6 +242,34 @@ fun EraseScreen(
     }
 
     /**
+     * Live strength of the last Magic / Auto-Color tap: every slider value recomputes the result from the
+     * untouched mask and swaps the preview in one go (no revert in between, so no flicker).
+     * Tolerance 0 = picture as before the tap, 100 = full effect. It becomes ONE undo step when settled.
+     */
+    suspend fun pendingLoop() {
+        var done = -1f
+        while (wanted[0] != done) {
+            val t = wanted[0]
+            done = t
+            val op = pending ?: break
+            val base = mask
+            val result = if (t >= 0.5f) {
+                val ai = op.ai
+                if (ai != null) {
+                    withContext(Dispatchers.Default) { AutoCutout.blend(base, ai, t / 100f) }
+                } else if (op.isColor) {
+                    MaskEditor.removeByColor(original, base, op.color, t)
+                } else {
+                    MaskEditor.magicWandFloodFill(original, base, op.bx, op.by, t)
+                }
+            } else null
+            preview = result
+            version++
+            refreshUndo()
+        }
+    }
+
+    /**
      * AI-Auto: the cut is computed once, then shown as a live preview whose strength is the "Strength" slider
      * (0 = picture as before, 100 = full cut). It becomes ONE undo step when settled.
      */
@@ -277,34 +305,6 @@ fun EraseScreen(
     fun runAuto() {
         if (blocked()) return
         if (hasLivePreview()) settleThen { runAutoNow() } else runAutoNow()
-    }
-
-    /**
-     * Live strength of the last Magic / Auto-Color tap: every slider value recomputes the result from the
-     * untouched mask and swaps the preview in one go (no revert in between, so no flicker).
-     * Tolerance 0 = picture as before the tap, 100 = full effect. It becomes ONE undo step when settled.
-     */
-    suspend fun pendingLoop() {
-        var done = -1f
-        while (wanted[0] != done) {
-            val t = wanted[0]
-            done = t
-            val op = pending ?: break
-            val base = mask
-            val result = if (t >= 0.5f) {
-                val ai = op.ai
-                if (ai != null) {
-                    withContext(Dispatchers.Default) { AutoCutout.blend(base, ai, t / 100f) }
-                } else if (op.isColor) {
-                    MaskEditor.removeByColor(original, base, op.color, t)
-                } else {
-                    MaskEditor.magicWandFloodFill(original, base, op.bx, op.by, t)
-                }
-            } else null
-            preview = result
-            version++
-            refreshUndo()
-        }
     }
 
     fun requestPending(tol: Float) {
