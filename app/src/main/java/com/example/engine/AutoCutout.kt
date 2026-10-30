@@ -12,13 +12,14 @@ import kotlinx.coroutines.delay
  */
 object AutoCutout {
 
-    class Outcome(val mask: Bitmap, val usedFallback: Boolean)
+    class Outcome(val mask: Bitmap, val usedFallback: Boolean, val reason: String? = null)
 
     suspend fun run(original: Bitmap, onModelDownloading: () -> Unit): Outcome {
         val input = softwareCopy(original)
         var aiMask: Bitmap? = null
         val deadline = SystemClock.elapsedRealtime() + MODEL_WAIT_MS
         var notified = false
+        var reason: String? = null
         val ml = MlKitSegmenter()
         while (true) {
             try {
@@ -27,6 +28,7 @@ object AutoCutout {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                reason = (e.javaClass.simpleName + ": " + (e.message ?: "")).take(90)
                 val waiting = e.message?.contains("download", ignoreCase = true) == true
                 if (!waiting || SystemClock.elapsedRealtime() > deadline) break
                 if (!notified) { notified = true; onModelDownloading() }
@@ -41,13 +43,14 @@ object AutoCutout {
             if (input !== original) input.recycle()
             return Outcome(cleaned, usedFallback = false)
         }
+        if (ai != null) reason = "no subject detected"
         ai?.recycle()
 
         val fb = GrabCutLiteSegmenter().segment(input)
         val cleaned = MaskCleanup.clean(fb)
         if (cleaned !== fb) fb.recycle()
         if (input !== original) input.recycle()
-        return Outcome(cleaned, usedFallback = true)
+        return Outcome(cleaned, usedFallback = true, reason = reason)
     }
 
     private fun softwareCopy(src: Bitmap): Bitmap =
