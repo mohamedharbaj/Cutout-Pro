@@ -196,7 +196,7 @@ private fun HomeScreen(onPick: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Image(
-            painter = painterResource(R.drawable.ic_logo),
+            painter = painterResource(R.drawable.app_icon),
             contentDescription = null,
             modifier = Modifier.size(104.dp).clip(RoundedCornerShape(24.dp))
         )
