@@ -10,7 +10,6 @@ import com.example.util.ImageUtils
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -137,24 +136,34 @@ class CutoutProProcessingTest {
     }
 
     @Test
-    fun testUndoRedoManager() {
-        val undoManager = UndoRedoManager(maxHistory = 5)
+    fun testUndoRedoManager_unlimitedStepsBackToOriginal() {
+        val undoManager = UndoRedoManager()
         assertFalse(undoManager.canUndo)
         assertFalse(undoManager.canRedo)
 
-        val state1 = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
-        val state2 = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLACK) }
+        val mask = Bitmap.createBitmap(40, 40, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        // 20 separate edits (more than the old 6-step limit): each one erases a different column
+        for (i in 0 until 20) {
+            val before = undoManager.snapshotAlpha(mask)
+            for (y in 0 until 40) mask.setPixel(i, y, Color.TRANSPARENT)
+            assertTrue(undoManager.record(before, mask))
+        }
+        assertEquals(20, undoManager.undoCount)
+        assertEquals(0, mask.getPixel(5, 5) ushr 24)
 
-        undoManager.pushState(state1)
-        assertTrue(undoManager.canUndo)
-        assertFalse(undoManager.canRedo)
-
-        val restored = undoManager.undo(state2)
-        assertNotNull(restored)
+        // one undo restores exactly one edit
+        assertTrue(undoManager.undo(mask))
+        assertEquals(255, mask.getPixel(19, 5) ushr 24)
+        assertEquals(0, mask.getPixel(18, 5) ushr 24)
         assertTrue(undoManager.canRedo)
+        assertTrue(undoManager.redo(mask))
+        assertEquals(0, mask.getPixel(19, 5) ushr 24)
 
-        val redone = undoManager.redo(restored!!)
-        assertNotNull(redone)
+        // undo everything: back to the untouched original
+        assertEquals(20, undoManager.undoAll(mask))
+        for (x in 0 until 40) assertEquals(255, mask.getPixel(x, 7) ushr 24)
+        assertFalse(undoManager.canUndo)
+        assertEquals(20, undoManager.redoCount)
     }
 
     @Test
