@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -65,10 +66,14 @@ import com.example.ui.components.rememberDelayedFlag
 import com.example.ui.components.StarIcon
 import com.example.ui.components.UndoRedoButton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class EraseTool { AUTO, COLOR, MAGIC, MANUAL, REPAIR, ZOOM }
+
+/** Last Magic / Auto-Color tap. The Tolerance slider re-applies it live: 0 = untouched picture, 100 = full effect. */
+private class PendingOp(val isColor: Boolean, val bx: Int, val by: Int, val color: Int)
 
 private class StrokeState {
     var lastX = 0f
@@ -131,6 +136,10 @@ fun EraseScreen(
     var undoCount by remember { mutableIntStateOf(undo.undoCount) }
     var redoCount by remember { mutableIntStateOf(undo.redoCount) }
     var busyMessage by remember { mutableStateOf<String?>(null) }
+    var pending by remember { mutableStateOf<PendingOp?>(null) }
+    var pendingApplied by remember { mutableStateOf(false) }
+    val workerHolder = remember { arrayOfNulls<Job>(1) }
+    val wanted = remember { floatArrayOf(30f) }
 
     val xf = ViewXform(
         canvasSize.width.toFloat(), canvasSize.height.toFloat(),
@@ -138,6 +147,15 @@ fun EraseScreen(
     )
     // Gesture lambdas outlive a single composition, so they must read the latest transform.
     val xfNow by rememberUpdatedState(xf)
+
+    // switching tool ends the live slider preview of the last Magic / Auto-Color tap
+    LaunchedEffect(tool) {
+        pending = null
+        pendingApplied = false
+    }
+
+    /** True while a tool operation or a live slider preview is still running. */
+    fun blocked(): Boolean = busy || workerHolder[0]?.isActive == true
 
     fun refreshUndo() {
         undoCount = undo.undoCount
@@ -157,16 +175,20 @@ fun EraseScreen(
     }
 
     fun doUndo() {
-        if (busy) return
+        if (blocked()) return
         if (undo.undo(mask)) {
+            pending = null
+            pendingApplied = false
             version++
             refreshUndo()
         }
     }
 
     fun doRedo() {
-        if (busy) return
+        if (blocked()) return
         if (undo.redo(mask)) {
+            pending = null
+            pendingApplied = false
             version++
             refreshUndo()
         }
@@ -174,15 +196,19 @@ fun EraseScreen(
 
     /** Long-press on Undo: back to the original picture, before any background removal. */
     fun doUndoAll() {
-        if (busy) return
+        if (blocked()) return
         if (undo.undoAll(mask) > 0) {
+            pending = null
+            pendingApplied = false
             version++
             refreshUndo()
         }
     }
 
     fun runAuto() {
-        if (busy) return
+        if (blocked()) return
+        pending = null
+        pendingApplied = false
         scope.launch {
             busy = true
             busyMessage = null
@@ -193,7 +219,9 @@ fun EraseScreen(
                 // keep everything already erased by hand: the AI cut only removes more
                 val merged = withContext(Dispatchers.Default) { MaskEditor.intersect(outcome.mask, mask) }
                 commit(merged)
-                if (outcome.usedFallback) context.toast(context.getString(R.string.ai_fallback))
+                if (outcome.usedFallback) {
+                    context.toast(context.getString(R.string.ai_fallback) + (outcome.reason?.let { "\n($it)" } ?: ""))
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -207,32 +235,57 @@ fun EraseScreen(
 
     // Colour / Magic: the crosshair sits above the finger (Cursor Offset), so the finger never hides
     // the exact pixel. The colour is picked and removed where the crosshair is when the finger lifts.
+    /**
+     * Applies (or re-applies) the pending Magic / Auto-Color tap with the wanted tolerance. Every call first
+     * reverts the previous result of this same tap, so the whole slider drag is ONE undo step:
+     * tolerance 0 = picture exactly as before the tap, tolerance 100 = full effect.
+     */
+    fun requestPending(tol: Float) {
+        wanted[0] = tol
+        if (workerHolder[0]?.isActive == true) return
+        workerHolder[0] = scope.launch {
+            try {
+                var done = -1f
+                while (wanted[0] != done) {
+                    val t = wanted[0]
+                    done = t
+                    val op = pending ?: break
+                    if (pendingApplied) {
+                        withContext(Dispatchers.Default) { undo.undo(mask) }
+                        pendingApplied = false
+                        version++
+                        refreshUndo()
+                    }
+                    if (t >= 0.5f) {
+                        val result = if (op.isColor) {
+                            MaskEditor.removeByColor(original, mask, op.color, t)
+                        } else {
+                            MaskEditor.magicWandFloodFill(original, mask, op.bx, op.by, t)
+                        }
+                        commit(result)
+                        pendingApplied = true
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                context.toast(context.getString(R.string.error_process))
+            }
+        }
+    }
+
+    // Colour / Magic: the crosshair sits above the finger (Cursor Offset), so the finger never hides
+    // the exact pixel. The colour is picked and removed where the crosshair is when the finger lifts.
     fun applyAtCursor() {
-        if (busy) return
+        if (blocked()) return
         val p = cursor ?: return
         val x = xfNow
         val bx = x.toBmpX(p.x).toInt()
         val by = x.toBmpY(p.y).toInt()
         if (bx !in 0 until original.width || by !in 0 until original.height) return
-        val isColor = tool == EraseTool.COLOR
-        val tol = tolerance
-        scope.launch {
-            busy = true
-            try {
-                val result = if (isColor) {
-                    MaskEditor.removeByColor(original, mask, MaskEditor.pickColor(original, bx, by), tol)
-                } else {
-                    MaskEditor.magicWandFloodFill(original, mask, bx, by, tol)
-                }
-                commit(result)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                context.toast(context.getString(R.string.error_process))
-            } finally {
-                busy = false
-            }
-        }
+        pending = PendingOp(tool == EraseTool.COLOR, bx, by, MaskEditor.pickColor(original, bx, by))
+        pendingApplied = false
+        requestPending(tolerance)
     }
 
     fun beginStroke() {
@@ -243,6 +296,8 @@ fun EraseScreen(
         val before = stroke.before ?: return
         stroke.before = null
         undo.record(before, mask)
+        pending = null
+        pendingApplied = false
         refreshUndo()
     }
 
@@ -267,7 +322,7 @@ fun EraseScreen(
             EditorTopBar(
                 onBack = onBack,
                 actionLabel = stringResource(R.string.done),
-                onAction = { if (!busy) onDone(mask) }
+                onAction = { if (!blocked()) onDone(mask) }
             )
 
             // Canvas
@@ -296,7 +351,7 @@ fun EraseScreen(
                             EraseTool.MANUAL, EraseTool.REPAIR -> awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
                                 down.consume()
-                                if (busy) return@awaitEachGesture
+                                if (blocked()) return@awaitEachGesture
                                 beginStroke()
                                 try {
                                     brushAt(down.position, true)
@@ -366,7 +421,10 @@ fun EraseScreen(
                             LabeledSlider(stringResource(R.string.cursor_offset), offsetDp, 0f..120f) { offsetDp = it }
                         }
                         EraseTool.COLOR, EraseTool.MAGIC -> {
-                            LabeledSlider(stringResource(R.string.tolerance), tolerance, 1f..100f) { tolerance = it }
+                            LabeledSlider(stringResource(R.string.tolerance), tolerance, 0f..100f) {
+                                tolerance = it
+                                if (pending != null) requestPending(it)
+                            }
                             LabeledSlider(stringResource(R.string.cursor_offset), offsetDp, 0f..120f) { offsetDp = it }
                         }
                         else -> Unit
