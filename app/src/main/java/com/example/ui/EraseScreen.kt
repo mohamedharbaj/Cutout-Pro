@@ -9,6 +9,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,9 +43,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -301,6 +306,15 @@ fun EraseScreen(
         refreshUndo()
     }
 
+    /** A second finger arrived while a brush stroke was open: throw that stroke away (it was a pinch). */
+    fun cancelStroke() {
+        val before = stroke.before ?: return
+        stroke.before = null
+        if (undo.record(before, mask)) undo.cancelLast(mask)
+        version++
+        refreshUndo()
+    }
+
     fun brushAt(screen: Offset, first: Boolean) {
         val x = xfNow
         val eff = Offset(screen.x, screen.y - offsetDp * density)
@@ -332,56 +346,75 @@ fun EraseScreen(
                     .fillMaxWidth()
                     .onSizeChanged { canvasSize = it }
                     .pointerInput(tool) {
-                        when (tool) {
-                            EraseTool.COLOR, EraseTool.MAGIC -> awaitEachGesture {
-                                val down = awaitFirstDown(requireUnconsumed = false)
+                        // One finger = the selected tool. Two fingers = pinch-zoom + pan, in EVERY tool
+                        // (no need to switch to the Zoom tool). The Zoom tool itself also pans with one finger.
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val isWand = tool == EraseTool.COLOR || tool == EraseTool.MAGIC
+                            val isBrush = tool == EraseTool.MANUAL || tool == EraseTool.REPAIR
+                            val toolActs = isWand || isBrush
+                            var acting = toolActs && !blocked()
+                            var strokeOpen = false
+                            if (acting) {
                                 down.consume()
-                                cursor = Offset(down.position.x, down.position.y - offsetDp * density)
+                                if (isWand) {
+                                    cursor = Offset(down.position.x, down.position.y - offsetDp * density)
+                                } else {
+                                    beginStroke()
+                                    strokeOpen = true
+                                    brushAt(down.position, true)
+                                }
+                            }
+                            try {
                                 while (true) {
                                     val event = awaitPointerEvent()
-                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                    if (!change.pressed) {
-                                        applyAtCursor()
+                                    val pressed = event.changes.filter { it.pressed }
+                                    if (pressed.isEmpty()) {
+                                        if (acting && isWand) applyAtCursor()
                                         break
                                     }
-                                    cursor = Offset(change.position.x, change.position.y - offsetDp * density)
-                                    change.consume()
-                                }
-                            }
-                            EraseTool.MANUAL, EraseTool.REPAIR -> awaitEachGesture {
-                                val down = awaitFirstDown(requireUnconsumed = false)
-                                down.consume()
-                                if (blocked()) return@awaitEachGesture
-                                beginStroke()
-                                try {
-                                    brushAt(down.position, true)
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                        if (!change.pressed) break
-                                        brushAt(change.position, false)
+                                    if (pressed.size >= 2 || !toolActs) {
+                                        if (acting) {
+                                            // a second finger arrived: it was a zoom, not a tool action
+                                            acting = false
+                                            if (strokeOpen) {
+                                                strokeOpen = false
+                                                cancelStroke()
+                                            }
+                                            cursor = null
+                                        }
+                                        val zoomChange = event.calculateZoom()
+                                        val panChange = event.calculatePan()
+                                        val centroid = event.calculateCentroid(useCurrent = false)
+                                        val oldZoom = zoom
+                                        val newZoom = (oldZoom * zoomChange).coerceIn(1f, 8f)
+                                        val ratio = newZoom / oldZoom
+                                        val cx = canvasSize.width / 2f
+                                        val cy = canvasSize.height / 2f
+                                        if (centroid.isSpecified) {
+                                            pan = if (newZoom <= 1.001f) {
+                                                Offset.Zero
+                                            } else {
+                                                Offset(
+                                                    centroid.x + panChange.x - cx - (centroid.x - cx - pan.x) * ratio,
+                                                    centroid.y + panChange.y - cy - (centroid.y - cy - pan.y) * ratio
+                                                )
+                                            }
+                                            zoom = newZoom
+                                        }
+                                        event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                    } else if (acting) {
+                                        val change = pressed[0]
+                                        if (isWand) {
+                                            cursor = Offset(change.position.x, change.position.y - offsetDp * density)
+                                        } else {
+                                            brushAt(change.position, false)
+                                        }
                                         change.consume()
                                     }
-                                } finally {
-                                    endStroke()
                                 }
-                            }
-                            EraseTool.AUTO -> Unit
-                            EraseTool.ZOOM -> detectTransformGestures { centroid, panChange, zoomChange, _ ->
-                                val oldZoom = zoom
-                                val newZoom = (oldZoom * zoomChange).coerceIn(1f, 8f)
-                                val ratio = newZoom / oldZoom
-                                val cx = canvasSize.width / 2f
-                                val cy = canvasSize.height / 2f
-                                pan = if (newZoom <= 1.001f) {
-                                    Offset.Zero
-                                } else {
-                                    Offset(
-                                        centroid.x + panChange.x - cx - (centroid.x - cx - pan.x) * ratio,
-                                        centroid.y + panChange.y - cy - (centroid.y - cy - pan.y) * ratio
-                                    )
-                                }
-                                zoom = newZoom
+                            } finally {
+                                if (strokeOpen) endStroke()
                             }
                         }
                     }
